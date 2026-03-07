@@ -1,5 +1,7 @@
 'use strict'
 
+const auth = require('./auth')
+
 /**
  * Shared 200 response helper.
  * @param {Object} rep   - Fastify reply
@@ -77,7 +79,35 @@ async function getRacks (ctx, req) {
  * @returns {Object[]}
  */
 function routes (ctx) {
-  return [
+  const routeList = [
+    {
+      method: 'POST',
+      url: '/auth/signup',
+      schema: auth.userSchema.signup,
+      handler: async (req, rep) => {
+        try {
+          send200(rep, auth.signUpRoute(ctx, req))
+        } catch (err) {
+          rep
+            .status(err.statusCode || 500)
+            .send({ error: err.message || 'ERR_SIGNUP_FAILED' })
+        }
+      }
+    },
+    {
+      method: 'POST',
+      url: '/auth/login',
+      schema: auth.userSchema.login,
+      handler: async (req, rep) => {
+        try {
+          send200(rep, auth.loginRoute(ctx, req))
+        } catch (err) {
+          rep
+            .status(err.statusCode || 500)
+            .send({ error: err.message || 'ERR_LOGIN_FAILED' })
+        }
+      }
+    },
     {
       method: 'POST',
       url: '/inference',
@@ -120,6 +150,8 @@ function routes (ctx) {
       }
     }
   ]
+
+  return auth.withProtectedRoutes(ctx, routeList)
 }
 
 module.exports = { routes }
