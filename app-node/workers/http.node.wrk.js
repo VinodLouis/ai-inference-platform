@@ -3,6 +3,7 @@
 const async = require('async')
 const WrkBase = require('wrk-base/workers/base.wrk')
 const libServer = require('./lib/server')
+const auth = require('./lib/auth')
 
 /**
  * HTTP Gateway Worker.
@@ -55,6 +56,9 @@ class WrkNodeHttp extends WrkBase {
           super._start(next)
         },
         async () => {
+          // Initialize persistent auth store
+          await auth.initAuthStore(this)
+
           const httpd = this.httpd_h0
 
           libServer.routes(this).forEach((r) => httpd.addRoute(r))

@@ -86,7 +86,8 @@ function routes (ctx) {
       schema: auth.userSchema.signup,
       handler: async (req, rep) => {
         try {
-          send200(rep, auth.signUpRoute(ctx, req))
+          const result = await auth.signUpRoute(ctx, req)
+          send200(rep, result)
         } catch (err) {
           rep
             .status(err.statusCode || 500)
@@ -100,7 +101,8 @@ function routes (ctx) {
       schema: auth.userSchema.login,
       handler: async (req, rep) => {
         try {
-          send200(rep, auth.loginRoute(ctx, req))
+          const result = await auth.loginRoute(ctx, req)
+          send200(rep, result)
         } catch (err) {
           rep
             .status(err.statusCode || 500)

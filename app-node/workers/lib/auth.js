@@ -74,12 +74,22 @@ function getAuthConfig (ctx) {
   }
 }
 
-function getUsersStore (ctx) {
-  if (!ctx._usersByEmail) {
-    ctx._usersByEmail = new Map()
+async function initAuthStore (ctx) {
+  if (!ctx._usersDb) {
+    ctx._usersDb = await ctx.store_s0.getBee(
+      { name: 'users' },
+      { keyEncoding: 'utf-8', valueEncoding: 'json' }
+    )
+    await ctx._usersDb.ready()
   }
+  return ctx._usersDb
+}
 
-  return ctx._usersByEmail
+function getUsersStore (ctx) {
+  if (!ctx._usersDb) {
+    throw new Error('ERR_AUTH_STORE_NOT_INITIALIZED')
+  }
+  return ctx._usersDb
 }
 
 function toB64Url (value) {
@@ -200,7 +210,7 @@ function parseBearerToken (req) {
   return token
 }
 
-function signUpRoute (ctx, req) {
+async function signUpRoute (ctx, req) {
   const conf = getAuthConfig(ctx)
 
   if (!conf.signupSecret) {
@@ -214,16 +224,19 @@ function signUpRoute (ctx, req) {
   const usersStore = getUsersStore(ctx)
   const email = String(req.body.email).toLowerCase()
 
-  if (usersStore.has(email)) {
+  const existing = await usersStore.get(email)
+  if (existing) {
     throw new AuthError('ERR_USER_EXISTS', 409)
   }
 
-  usersStore.set(email, {
+  const user = {
     email,
     passwordHash: hashPassword(req.body.password),
     roles: req.body.roles,
     createdAt: Date.now()
-  })
+  }
+
+  await usersStore.put(email, user)
 
   return {
     email,
@@ -231,7 +244,7 @@ function signUpRoute (ctx, req) {
   }
 }
 
-function loginRoute (ctx, req) {
+async function loginRoute (ctx, req) {
   const conf = getAuthConfig(ctx)
 
   if (!conf.tokenSecret) {
@@ -246,7 +259,8 @@ function loginRoute (ctx, req) {
 
   const usersStore = getUsersStore(ctx)
   const email = String(authData.email).toLowerCase()
-  const user = usersStore.get(email)
+  const userEntry = await usersStore.get(email)
+  const user = userEntry?.value
 
   if (!user || !verifyPassword(authData.password, user.passwordHash)) {
     throw new AuthError('ERR_INVALID_CREDENTIALS', 401)
@@ -324,6 +338,7 @@ function withProtectedRoutes (ctx, routes) {
 
 module.exports = {
   authHandlers,
+  initAuthStore,
   loginRoute,
   requireAuth,
   signUpRoute,
