@@ -3,12 +3,17 @@
 const BfxWrkBase = require('bfx-wrk-base')
 const async = require('async')
 const pino = require('pino')
+const audit = require('../lib/audit')
 
 /**
  * Base worker class for the Inference Platform.
  * All microservice workers inherit from this class.
  * Provides Hyperswarm RPC server setup, structured logging,
  * and persistent key-value storage via hp-svc-facs-store.
+ *
+ * Audit logging:
+ *   Access audit utilities via `this.audit` in any worker.
+ *   Example: this.audit.logRequest(this.logger, traceId, 'methodName', {...})
  *
  * @extends BfxWrkBase
  */
@@ -40,10 +45,27 @@ class WrkBase extends BfxWrkBase {
       ]
     ])
 
-    this.logger = pino({
-      name: `wrk:${this.ctx.wtype}:${process.pid}`,
-      level: this.conf.debug || this.ctx.debug ? 'debug' : 'info'
-    })
+    // Configure console logging
+    const logLevel = this.conf.debug || this.ctx.debug ? 'debug' : 'info'
+    const loggerName = `wrk:${this.ctx.wtype}:${process.pid}`
+
+    // Check if logging is disabled (default: enabled)
+    // Can be disabled via environment variable if needed
+    const disableLogging = process.env.DISABLE_LOGGING === 'true'
+
+    if (disableLogging) {
+      // Silent logger (no output)
+      this.logger = pino({ level: 'silent' })
+    } else {
+      // Console logging to stdout (NDJSON format)
+      this.logger = pino({
+        name: loggerName,
+        level: logLevel
+      })
+    }
+
+    // Attach audit utilities for all workers
+    this.audit = audit
   }
 
   /**
@@ -91,6 +113,14 @@ class WrkBase extends BfxWrkBase {
           this.status.rpcClientKey = this.getRpcClientKey().toString('hex')
 
           this.saveStatus()
+
+          // Audit: Log service ready event
+          this.audit.logLifecycle(this.logger, 'ready', {
+          ***REMOVED*** this.ctx.wtype,
+            rack: this.ctx.rack,
+            rpcPublicKey: this.status.rpcPublicKey,
+            pid: process.pid
+          })
         }
       ],
       cb

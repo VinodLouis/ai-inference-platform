@@ -97,6 +97,16 @@ class WrkInference extends WrkBase {
       throw new Error('ERR_MODEL_WORKER_RPC_KEY_MISSING')
     }
 
+    // Audit: Log outgoing RPC call to model worker
+    const timer = this.audit.createTimer()
+    this.audit.logRpcCall(
+      this.logger,
+      job.traceId || job.id,
+      modelRpcKey.substring(0, 16),
+      'runModel',
+      { jobId: job.id, modelId: job.modelId }
+    )
+
     // Call model worker's runModel method
     const result = await this.net_r0.jRequest(
       modelRpcKey,
@@ -104,9 +114,19 @@ class WrkInference extends WrkBase {
       {
         modelId: job.modelId,
         prompt: job.prompt,
-        params: job.params
+        params: job.params,
+        traceId: job.traceId || job.id // Propagate trace ID
       },
       { timeout: 120000 }
+    )
+
+    // Audit: Log RPC response
+    this.audit.logRpcResponse(
+      this.logger,
+      job.traceId || job.id,
+      modelRpcKey.substring(0, 16),
+      'runModel',
+      { jobId: job.id, durationMs: timer(), tokens: result.tokens }
     )
 
     return {
@@ -125,12 +145,36 @@ class WrkInference extends WrkBase {
       job.status = 'running'
       await this._saveJob(job)
 
+      // Audit: Log job status change
+      this.audit.logJobStatus(
+        this.logger,
+        job.traceId || job.id,
+        job.id,
+        'running',
+        { modelId: job.modelId }
+      )
+
       job.result = await this._execModel(job)
       job.status = 'completed'
+
+      // Audit: Log job completion
+      this.audit.logJobStatus(
+        this.logger,
+        job.traceId || job.id,
+        job.id,
+        'completed',
+        { modelId: job.modelId, tokens: job.result.tokens }
+      )
     } catch (e) {
       job.error = e.message
       job.status = 'failed'
       this.logger.error({ jobId: job.id }, e)
+
+      // Audit: Log job failure
+      this.audit.logError(this.logger, job.traceId || job.id, 'executeJob', e, {
+        jobId: job.id,
+        modelId: job.modelId
+      })
     }
 
     await this._saveJob(job)
@@ -145,14 +189,30 @@ class WrkInference extends WrkBase {
    * @param {string} req.modelId
    * @param {string} req.prompt
    * @param {Object} [req.params]
+   * @param {string} [req.traceId] - Optional trace ID for request correlation
    * @returns {Promise<Object>} { jobId, status, result } on success
    */
   async runInference (req) {
     if (!req.modelId) throw new Error('ERR_MODEL_ID_REQUIRED')
     if (!req.prompt) throw new Error('ERR_PROMPT_REQUIRED')
 
+    const traceId = this.audit.getOrCreateTraceId(req)
+
+    // Audit: Log incoming request
+    this.audit.logRequest(this.logger, traceId, 'runInference', {
+      modelId: req.modelId,
+      promptLength: req.prompt.length,
+      userId: req.userId
+    })
+
     const job = this._createJob(req)
+    job.traceId = traceId // Attach trace ID to job for correlation
     await this._saveJob(job)
+
+    // Audit: Log job created
+    this.audit.logJobStatus(this.logger, traceId, job.id, 'queued', {
+      modelId: req.modelId
+    })
 
     // Run asynchronously so the RPC caller gets an immediate jobId ack.
     // For synchronous (blocking) inference remove the setImmediate wrapper.
@@ -161,6 +221,12 @@ class WrkInference extends WrkBase {
         this.logger.error({ jobId: job.id }, 'unhandled executeJob error', e)
       })
     )
+
+    // Audit: Log response
+    this.audit.logResponse(this.logger, traceId, 'runInference', {
+      jobId: job.id,
+      status: job.status
+    })
 
     return { jobId: job.id, status: job.status }
   }

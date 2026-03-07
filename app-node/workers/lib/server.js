@@ -29,10 +29,49 @@ function pickOrkKey (ctx) {
  * Body: { modelId, prompt?, inputs?, params? }
  */
 async function postInference (ctx, req) {
-  const orkKey = pickOrkKey(ctx)
-  return ctx.net_r0.jRequest(orkKey, 'routeInference', req.body, {
-    timeout: 120000
+  const traceId = ctx.audit.generateTraceId()
+
+  // Audit: Log HTTP request
+  ctx.audit.logRequest(ctx.logger, traceId, 'POST /inference', {
+    modelId: req.body.modelId,
+    userId: req.user?.id,
+    ip: req.ip
   })
+
+  const timer = ctx.audit.createTimer()
+  const orkKey = pickOrkKey(ctx)
+
+  // Attach traceId to propagate through the system
+  const requestBody = { ...req.body, traceId }
+
+  // Audit: Log RPC call to orchestrator
+  ctx.audit.logRpcCall(
+    ctx.logger,
+    traceId,
+    orkKey.substring(0, 16),
+    'routeInference',
+    {
+      modelId: req.body.modelId
+    }
+  )
+
+  const result = await ctx.net_r0.jRequest(
+    orkKey,
+    'routeInference',
+    requestBody,
+    {
+      timeout: 120000
+    }
+  )
+
+  // Audit: Log response
+  ctx.audit.logResponse(ctx.logger, traceId, 'POST /inference', {
+    durationMs: timer(),
+    jobId: result.jobId,
+    status: result.status
+  })
+
+  return result
 }
 
 /**
@@ -41,13 +80,30 @@ async function postInference (ctx, req) {
  * Query params: rackId (required)
  */
 async function getInferenceStatus (ctx, req) {
+  const traceId = ctx.audit.generateTraceId()
+
+  // Audit: Log HTTP request
+  ctx.audit.logRequest(ctx.logger, traceId, 'GET /inference/:jobId', {
+    jobId: req.params.jobId,
+    rackId: req.query.rackId,
+    userId: req.user?.id,
+    ip: req.ip
+  })
+
   const orkKey = pickOrkKey(ctx)
-  return ctx.net_r0.jRequest(
+  const result = await ctx.net_r0.jRequest(
     orkKey,
     'getJobStatus',
     { jobId: req.params.jobId, rackId: req.query.rackId },
     { timeout: 15000 }
   )
+
+  // Audit: Log response
+  ctx.audit.logResponse(ctx.logger, traceId, 'GET /inference/:jobId', {
+    status: result.status
+  })
+
+  return result
 }
 
 /**

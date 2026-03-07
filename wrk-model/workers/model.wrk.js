@@ -375,44 +375,73 @@ class WrkModel extends WrkBase {
    * @param {string} req.modelId
    * @param {string} req.prompt
    * @param {Object} [req.params]      - temperature, max_tokens, top_p, etc.
+   * @param {string} [req.traceId]     - Trace ID for request correlation
    * @returns {Promise<Object>} { output, tokens, latencyMs }
    */
   async runModel (req) {
     if (!req.modelId) throw new Error('ERR_MODEL_ID_REQUIRED')
 
-    await this._loadModel(req.modelId) // lazy load
+    const traceId = this.audit.getOrCreateTraceId(req)
+    const timer = this.audit.createTimer()
 
-    const models = this._ensureModelMem()
-    const entry = models[req.modelId]
-    const start = Date.now()
+    // Audit: Log incoming RPC request
+    this.audit.logRequest(this.logger, traceId, 'runModel', {
+      modelId: req.modelId,
+      promptLength: req.prompt?.length,
+      params: req.params
+    })
 
-    let output
-    let tokenCount = 0
-    const provider = entry.instance.provider || 'stub'
+    try {
+      await this._loadModel(req.modelId) // lazy load
 
-    if (provider === 'node-llama-cpp') {
-      if (!req.prompt) throw new Error('ERR_PROMPT_REQUIRED')
+      const models = this._ensureModelMem()
+      const entry = models[req.modelId]
+      const start = Date.now()
 
-      const { LlamaChatSession } = await this._getLlamaRuntime()
-      const session = new LlamaChatSession({
-        contextSequence: entry.instance.context.getSequence()
+      let output
+      let tokenCount = 0
+      const provider = entry.instance.provider || 'stub'
+
+      if (provider === 'node-llama-cpp') {
+        if (!req.prompt) throw new Error('ERR_PROMPT_REQUIRED')
+
+        const { LlamaChatSession } = await this._getLlamaRuntime()
+        const session = new LlamaChatSession({
+          contextSequence: entry.instance.context.getSequence()
+        })
+
+        const params = req.params || {}
+        const llamaParams = this._buildLlamaParams(params)
+
+        output = await session.prompt(req.prompt, llamaParams)
+        tokenCount = this._countTokens(output)
+      } else {
+        if (!req.prompt) throw new Error('ERR_PROMPT_REQUIRED')
+        output = `[***REMOVED***${entry.meta.name}] ${req.prompt}`
+        tokenCount = this._countTokens(output)
+      }
+
+      const result = {
+        output,
+        tokens: tokenCount,
+        latencyMs: Date.now() - start
+      }
+
+      // Audit: Log successful response
+      this.audit.logResponse(this.logger, traceId, 'runModel', {
+        modelId: req.modelId,
+        tokens: tokenCount,
+        durationMs: timer(),
+        provider
       })
 
-      const params = req.params || {}
-      const llamaParams = this._buildLlamaParams(params)
-
-      output = await session.prompt(req.prompt, llamaParams)
-      tokenCount = this._countTokens(output)
-    } else {
-      if (!req.prompt) throw new Error('ERR_PROMPT_REQUIRED')
-      output = `[***REMOVED***${entry.meta.name}] ${req.prompt}`
-      tokenCount = this._countTokens(output)
-    }
-
-    return {
-      output,
-      tokens: tokenCount,
-      latencyMs: Date.now() - start
+      return result
+    } catch (error) {
+      // Audit: Log error
+      this.audit.logError(this.logger, traceId, 'runModel', error, {
+        modelId: req.modelId
+      })
+      throw error
     }
   }
 
