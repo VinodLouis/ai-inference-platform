@@ -58,13 +58,41 @@ class WrkOrkBase extends WrkBase {
    * @returns {Promise<1>}
    */
   async registerRack (req) {
-    if (!req.id) throw new Error('ERR_RACK_ID_INVALID')
-    if (!req.type) throw new Error('ERR_RACK_TYPE_INVALID')
-    if (!req.info || !req.info.rpcPublicKey) { throw new Error('ERR_RACK_RPC_KEY_INVALID') }
+    const traceId = this.audit.generateTraceId()
 
-    await this.racks.put(req.id, req)
-    this.logger.info({ rackId: req.id, type: req.type }, 'rack registered')
-    return 1
+    // Audit: Request received
+    this.audit.logRequest(this.logger, traceId, 'registerRack', {
+      rackId: req.id,
+      type: req.type
+    })
+
+    try {
+      if (!req.id) throw new Error('ERR_RACK_ID_INVALID')
+      if (!req.type) throw new Error('ERR_RACK_TYPE_INVALID')
+      if (!req.info || !req.info.rpcPublicKey) {
+        throw new Error('ERR_RACK_RPC_KEY_INVALID')
+      }
+
+      await this.racks.put(req.id, req)
+
+      this.logger.info({ rackId: req.id, type: req.type }, 'rack registered')
+
+      // Audit: Successful registration
+      this.audit.logResponse(this.logger, traceId, 'registerRack', {
+        rackId: req.id,
+        type: req.type,
+        status: 'registered'
+      })
+
+      return 1
+    } catch (err) {
+      // Audit: Registration failed
+      this.audit.logError(this.logger, traceId, 'registerRack', err, {
+        rackId: req.id,
+        type: req.type
+      })
+      throw err
+    }
   }
 
   /**
@@ -75,21 +103,45 @@ class WrkOrkBase extends WrkBase {
    * @returns {Promise<number>} Count of removed racks
    */
   async forgetRacks (req) {
-    const stream = this.racks.createReadStream()
-    let cnt = 0
+    const traceId = this.audit.generateTraceId()
 
-    for await (const data of stream) {
-      const entry = data.value
-      const shouldRemove =
-        req.all || (Array.isArray(req.ids) && req.ids.includes(entry.id))
+    // Audit: Request received
+    this.audit.logRequest(this.logger, traceId, 'forgetRacks', {
+      all: req.all,
+      rackCount: Array.isArray(req.ids) ? req.ids.length : 0
+    })
 
-      if (shouldRemove) {
-        await this.racks.del(entry.id)
-        cnt++
+    try {
+      const stream = this.racks.createReadStream()
+      let cnt = 0
+      const removedRacks = []
+
+      for await (const data of stream) {
+        const entry = data.value
+        const shouldRemove =
+          req.all || (Array.isArray(req.ids) && req.ids.includes(entry.id))
+
+        if (shouldRemove) {
+          await this.racks.del(entry.id)
+          cnt++
+          removedRacks.push(entry.id)
+        }
       }
-    }
 
-    return cnt
+      // Audit: Successful removal
+      this.audit.logResponse(this.logger, traceId, 'forgetRacks', {
+        removed: cnt,
+        rackIds: removedRacks
+      })
+
+      return cnt
+    } catch (err) {
+      // Audit: Removal failed
+      this.audit.logError(this.logger, traceId, 'forgetRacks', err, {
+        all: req.all
+      })
+      throw err
+    }
   }
 
   /**
@@ -102,27 +154,51 @@ class WrkOrkBase extends WrkBase {
    * @returns {Promise<Object[]>}
    */
   async listRacks (req) {
-    if (req.type && typeof req.type !== 'string') { throw new Error('ERR_TYPE_INVALID') }
+    const traceId = this.audit.generateTraceId()
 
-    const stream = this.racks.createReadStream()
-    const res = []
+    // Audit: Request received
+    this.audit.logRequest(this.logger, traceId, 'listRacks', {
+      type: req.type,
+      includeKeys: req.keys
+    })
 
-    for await (const data of stream) {
-      const entry = data.value
-      if (!req.type || entry.type.startsWith(req.type)) {
-        res.push(entry)
+    try {
+      if (req.type && typeof req.type !== 'string') {
+        throw new Error('ERR_TYPE_INVALID')
       }
-    }
 
-    if (!req.keys) {
-      return res.map((entry) => {
-        const safe = { ...entry, info: { ...entry.info } }
-        delete safe.info.rpcPublicKey
-        return safe
+      const stream = this.racks.createReadStream()
+      const res = []
+
+      for await (const data of stream) {
+        const entry = data.value
+        if (!req.type || entry.type.startsWith(req.type)) {
+          res.push(entry)
+        }
+      }
+
+      if (!req.keys) {
+        return res.map((entry) => {
+          const safe = { ...entry, info: { ...entry.info } }
+          delete safe.info.rpcPublicKey
+          return safe
+        })
+      }
+
+      // Audit: Successful list
+      this.audit.logResponse(this.logger, traceId, 'listRacks', {
+        count: res.length,
+        type: req.type
       })
-    }
 
-    return res
+      return res
+    } catch (err) {
+      // Audit: List failed
+      this.audit.logError(this.logger, traceId, 'listRacks', err, {
+        type: req.type
+      })
+      throw err
+    }
   }
 
   _start (cb) {

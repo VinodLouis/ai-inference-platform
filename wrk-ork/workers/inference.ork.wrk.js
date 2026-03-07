@@ -51,19 +51,53 @@ class WrkOrkInference extends WrkOrkBase {
    * @returns {Promise<Object>} Job acknowledgment: { jobId, rackId, status }
    */
   async routeInference (req) {
-    if (!req.modelId) throw new Error('ERR_MODEL_ID_REQUIRED')
-    if (!req.prompt && !req.inputs) throw new Error('ERR_INPUT_REQUIRED')
+    const traceId = this.audit.generateTraceId()
 
-    const rack = await this._pickRack(req.modelId)
+    // Audit: Request received
+    this.audit.logRequest(this.logger, traceId, 'routeInference', {
+      modelId: req.modelId,
+      hasPrompt: !!req.prompt,
+      hasInputs: !!req.inputs
+    })
 
-    const result = await this.net_r0.jRequest(
-      rack.info.rpcPublicKey,
-      'runInference',
-      req,
-      { timeout: 120000 }
-    )
+    try {
+      if (!req.modelId) throw new Error('ERR_MODEL_ID_REQUIRED')
+      if (!req.prompt && !req.inputs) throw new Error('ERR_INPUT_REQUIRED')
 
-    return { ...result, rackId: rack.id }
+      const rack = await this._pickRack(req.modelId)
+
+      // Audit: RPC call to inference worker
+      this.audit.logRpcCall(this.logger, traceId, rack.id, 'runInference', {
+        modelId: req.modelId
+      })
+
+      const result = await this.net_r0.jRequest(
+        rack.info.rpcPublicKey,
+        'runInference',
+        req,
+        { timeout: 120000 }
+      )
+
+      // Audit: Successful routing and response
+      this.audit.logRpcResponse(this.logger, traceId, rack.id, 'runInference', {
+        jobId: result.jobId,
+        status: result.status
+      })
+
+      this.audit.logResponse(this.logger, traceId, 'routeInference', {
+        jobId: result.jobId,
+        rackId: rack.id,
+        modelId: req.modelId
+      })
+
+      return { ...result, rackId: rack.id }
+    } catch (err) {
+      // Audit: Routing failed
+      this.audit.logError(this.logger, traceId, 'routeInference', err, {
+        modelId: req.modelId
+      })
+      throw err
+    }
   }
 
   /**
@@ -71,23 +105,70 @@ class WrkOrkInference extends WrkOrkBase {
    * @returns {Promise<Object[]>} Flat list of available models
    */
   async listModels () {
-    const racks = await this.listRacks({ type: 'model', keys: true })
+    const traceId = this.audit.generateTraceId()
 
-    const results = await async.mapLimit(racks, 5, async (rack) => {
-      try {
-        return await this.net_r0.jRequest(
-          rack.info.rpcPublicKey,
-          'listModels',
-          {},
-          { timeout: 10000 }
-        )
-      } catch (e) {
-        this.debugError(`listModels rack=${rack.id}`, e, true)
-        return []
-      }
-    })
+    // Audit: Request received
+    this.audit.logRequest(this.logger, traceId, 'listModels', {})
 
-    return results.flat()
+    try {
+      const racks = await this.listRacks({ type: 'model', keys: true })
+
+      this.audit.logResponse(this.logger, traceId, 'listModels', {
+        rackCount: racks.length
+      })
+
+      const results = await async.mapLimit(racks, 5, async (rack) => {
+        try {
+          // Audit: RPC call to model worker
+          this.audit.logRpcCall(
+            this.logger,
+            traceId,
+            rack.id,
+            'listModels',
+            {}
+          )
+
+          const models = await this.net_r0.jRequest(
+            rack.info.rpcPublicKey,
+            'listModels',
+            {},
+            { timeout: 10000 }
+          )
+
+          // Audit: Successful response from model worker
+          this.audit.logRpcResponse(
+            this.logger,
+            traceId,
+            rack.id,
+            'listModels',
+            {
+              modelCount: models.length
+            }
+          )
+
+          return models
+        } catch (e) {
+          this.debugError(`listModels rack=${rack.id}`, e, true)
+          // Audit: Failed to get models from this rack
+          this.audit.logError(
+            this.logger,
+            traceId,
+            `listModels[${rack.id}]`,
+            e,
+            {
+              rackId: rack.id
+            }
+          )
+          return []
+        }
+      })
+
+      return results.flat()
+    } catch (err) {
+      // Audit: Overall listModels failed
+      this.audit.logError(this.logger, traceId, 'listModels', err, {})
+      throw err
+    }
   }
 
   /**
@@ -98,20 +179,55 @@ class WrkOrkInference extends WrkOrkBase {
    * @returns {Promise<Object>} Job status object
    */
   async getJobStatus (req) {
-    if (!req.jobId) throw new Error('ERR_JOB_ID_REQUIRED')
-    if (!req.rackId) throw new Error('ERR_RACK_ID_REQUIRED')
+    const traceId = this.audit.generateTraceId()
 
-    const racks = await this.listRacks({ type: 'inference', keys: true })
-    const rack = racks.find((r) => r.id === req.rackId)
+    // Audit: Request received
+    this.audit.logRequest(this.logger, traceId, 'getJobStatus', {
+      jobId: req.jobId,
+      rackId: req.rackId
+    })
 
-    if (!rack) throw new Error('ERR_RACK_NOT_FOUND')
+    try {
+      if (!req.jobId) throw new Error('ERR_JOB_ID_REQUIRED')
+      if (!req.rackId) throw new Error('ERR_RACK_ID_REQUIRED')
 
-    return this.net_r0.jRequest(
-      rack.info.rpcPublicKey,
-      'getJobStatus',
-      { jobId: req.jobId },
-      { timeout: 10000 }
-    )
+      const racks = await this.listRacks({ type: 'inference', keys: true })
+      const rack = racks.find((r) => r.id === req.rackId)
+
+      if (!rack) throw new Error('ERR_RACK_NOT_FOUND')
+
+      // Audit: RPC call to inference worker for status
+      this.audit.logRpcCall(this.logger, traceId, rack.id, 'getJobStatus', {
+        jobId: req.jobId
+      })
+
+      const status = await this.net_r0.jRequest(
+        rack.info.rpcPublicKey,
+        'getJobStatus',
+        { jobId: req.jobId },
+        { timeout: 10000 }
+      )
+
+      // Audit: Successful status retrieval
+      this.audit.logRpcResponse(this.logger, traceId, rack.id, 'getJobStatus', {
+        jobStatus: status.status
+      })
+
+      this.audit.logResponse(this.logger, traceId, 'getJobStatus', {
+        jobId: req.jobId,
+        rackId: req.rackId,
+        status: status.status
+      })
+
+      return status
+    } catch (err) {
+      // Audit: Status query failed
+      this.audit.logError(this.logger, traceId, 'getJobStatus', err, {
+        jobId: req.jobId,
+        rackId: req.rackId
+      })
+      throw err
+    }
   }
 
   _start (cb) {
