@@ -1,0 +1,19 @@
+{
+  "name": "wrk-inference",
+  "version": "1.0.0",
+  "description": "Inference Worker – executes AI inference jobs and manages job state",
+  "license": "Apache-2.0",
+  "scripts": {
+    "lint": "standard",
+    "lint:fix": "standard --fix"
+  },
+  "dependencies": {
+    "async": "3.2.6",
+    "bfx-facs-interval": "git+https://github.com/bitfinexcom/bfx-facs-interval.git",
+    "bfx-svc-boot-js": "git+https://github.com/bitfinexcom/bfx-svc-boot-js.git",
+    "wrk-base": "file:../wrk-base"
+  },
+  "devDependencies": {
+    "standard": "17.1.0"
+  }
+}

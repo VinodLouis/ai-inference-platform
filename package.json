@@ -1,0 +1,21 @@
+{
+  "name": "ai-inference-platform",
+  "version": "1.0.0",
+  "description": "Distributed AI Inference Platform - P2P network for model serving",
+  "private": true,
+  "scripts": {
+    "lint": "npm run lint --workspaces",
+    "lint:fix": "npm run lint:fix --workspaces"
+  },
+  "workspaces": [
+    "wrk-base",
+    "wrk-model",
+    "wrk-inference",
+    "wrk-ork",
+    "app-node"
+  ],
+  "devDependencies": {
+    "standard": "17.1.0"
+  },
+  "license": "Apache-2.0"
+}

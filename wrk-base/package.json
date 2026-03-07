@@ -1,0 +1,25 @@
+{
+  "name": "wrk-base",
+  "version": "1.0.0",
+  "description": "Shared base worker for the AI Inference Platform",
+  "license": "Apache-2.0",
+  "scripts": {
+    "lint": "standard",
+    "lint:fix": "standard --fix"
+  },
+  "dependencies": {
+    "async": "3.2.6",
+    "bfx-svc-boot-js": "git+https://github.com/bitfinexcom/bfx-svc-boot-js.git",
+    "bfx-facs-http": "github:bitfinexcom/bfx-facs-http",
+    "bfx-wrk-base": "git+https://github.com/bitfinexcom/bfx-wrk-base.git",
+    "hp-svc-facs-net": "git+https://github.com/tetherto/hp-svc-facs-net.git",
+    "hp-svc-facs-store": "git+https://github.com/tetherto/hp-svc-facs-store.git",
+    "bfx-facs-lru": "github:bitfinexcom/bfx-facs-lru",
+    "bfx-facs-interval": "github:bitfinexcom/bfx-facs-interval",
+    "pino": "9.5.0",
+    "svc-facs-httpd": "github:tetherto/svc-facs-httpd"
+  },
+  "devDependencies": {
+    "standard": "17.1.0"
+  }
+}

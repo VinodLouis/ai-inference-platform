@@ -1,0 +1,20 @@
+{
+  "name": "app-node",
+  "version": "1.0.0",
+  "description": "HTTP Gateway – bridges REST clients to the Hyperswarm RPC network",
+  "license": "Apache-2.0",
+  "scripts": {
+    "lint": "standard",
+    "lint:fix": "standard --fix"
+  },
+  "dependencies": {
+    "async": "3.2.6",
+    "bfx-facs-lru": "git+https://github.com/bitfinexcom/bfx-facs-lru.git",
+    "bfx-svc-boot-js": "git+https://github.com/bitfinexcom/bfx-svc-boot-js.git",
+    "svc-facs-httpd": "git+https://github.com/tetherto/svc-facs-httpd.git",
+    "wrk-base": "file:../wrk-base"
+  },
+  "devDependencies": {
+    "standard": "17.1.0"
+  }
+}

@@ -1,0 +1,28 @@
+{
+  "debug": 0,
+  "runtime": {
+    "provider": "node-llama-cpp",
+    "modelBaseDir": "./models",
+    "modelCacheDir": "./models/.cache"
+  },
+  "models": [
+    {
+      "id": "tinyllama-1.1b",
+      "name": "TinyLlama 1.1B Chat",
+      "type": "text-generation",
+      "format": "gguf",
+      "path": "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf",
+      "source": {
+        "type": "huggingface",
+        "repo": "TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF",
+        "revision": "main",
+        "files": [
+          "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"
+        ],
+        "tokenEnv": "HF_TOKEN"
+      },
+      "autoload": true,
+      "contextLength": 2048
+    }
+  ]
+}

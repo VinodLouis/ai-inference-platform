@@ -1,0 +1,20 @@
+{
+  "name": "wrk-model",
+  "version": "1.0.0",
+  "description": "Model Worker – manages locally loaded AI models and runs inference",
+  "license": "Apache-2.0",
+  "scripts": {
+    "lint": "standard",
+    "lint:fix": "standard --fix"
+  },
+  "dependencies": {
+    "async": "3.2.6",
+    "bfx-facs-interval": "git+https://github.com/bitfinexcom/bfx-facs-interval.git",
+    "bfx-svc-boot-js": "git+https://github.com/bitfinexcom/bfx-svc-boot-js.git",
+    "node-llama-cpp": "^3.16.0",
+    "wrk-base": "file:../wrk-base"
+  },
+  "devDependencies": {
+    "standard": "17.1.0"
+  }
+}

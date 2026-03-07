@@ -1,0 +1,33 @@
+# Dependencies
+node_modules/
+package-lock.json
+
+# Environment files
+*.env
+*.env.local
+
+# Config files (use .example templates)
+**/config/common.json
+**/config/facs/*.config.json
+!**/config/common.json.example
+!**/config/facs/*.config.json.example
+
+
+
+# Models
+wrk-model/models/
+# Runtime data
+store/
+status/
+*.log
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor directories
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
