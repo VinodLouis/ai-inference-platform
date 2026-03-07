@@ -403,7 +403,7 @@ Client → HTTP Gateway → Orchestrator → Inference Worker → Model Worker
 
 Exposes REST endpoints. The `/inference` route forwards requests to the orchestrator via Hyperswarm RPC.
 
-**Authentication**: All routes except `/auth/signup` and `/auth/login` require a valid Bearer token. Token verification happens in `requireAuth` middleware before each protected route handler executes.
+**Authentication**: All routes except `/auth/signup` and `/auth/login` require a valid Bearer token. Token verification happens in `requireAuth` middleware before each protected route handler executes. User credentials are stored persistently in Hyperbee.
 
 **Config**: `app-node/config/common.json` contains:
 
@@ -634,11 +634,13 @@ The HTTP gateway (`app-node`) uses Fastify to expose REST endpoints that transla
 
 1. **Change default secrets in production**: The `signupSecret` and `tokenSecret` in `app-node/config/common.json` are placeholders. Generate strong random secrets before deploying.
 
-2. **No password recovery**: This is a minimal auth implementation. Add email verification and password reset flows for production use.
+2. **User storage is persistent**: The auth module stores users in Hyperbee (embedded key-value database). User data persists across server restarts and is stored in `app-node/store/`.
 
-3. **HTTPS recommended**: The HTTP gateway does not enforce TLS. Run it behind a reverse proxy (nginx, Caddy) with HTTPS in production.
+3. **No password recovery**: This is a minimal auth implementation. Add email verification and password reset flows for production use.
 
-4. **Rate limiting**: No rate limiting is implemented. Add middleware like `fastify-rate-limit` to prevent abuse.
+4. **HTTPS recommended**: The HTTP gateway does not enforce TLS. Run it behind a reverse proxy (nginx, Caddy) with HTTPS in production.
+
+5. **Rate limiting**: No rate limiting is implemented. Add middleware like `fastify-rate-limit` to prevent abuse.
 
 ---
 
