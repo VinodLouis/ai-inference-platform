@@ -1014,4 +1014,13 @@ Auth right now is minimal — just signup and login. For production, add email v
 
 The gateway doesn't handle TLS itself. Put a reverse proxy (nginx, Caddy) in front for HTTPS.
 
+### 14.13. Test Suite
+
+No automated tests exist today. A test harness should cover at least:
+
+- **Unit tests** — Provider logic (`generate`, `loadModel`, `normalizeParams`), auth helpers (token sign/verify, password hashing), and job state transitions.
+- **Integration tests** — Spin up a local DHT seed, boot each service, and verify end-to-end flows: rack registration → inference submission → job completion.
+- **RPC contract tests** — Validate request/response shapes for every registered RPC method so upstream changes don't silently break callers.
+- **Load / scalability tests** — Measure throughput under concurrent inference requests and confirm that adding workers scales linearly. The existing `SCALABILITY-TEST-README.md` outlines the manual approach.
+
 ---
