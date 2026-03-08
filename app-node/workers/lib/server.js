@@ -192,6 +192,12 @@ async function postInference (ctx, req) {
 async function getInferenceStatus (ctx, req) {
   const traceId = ctx.audit.generateTraceId()
 
+  if (!req.query.rackId) {
+    const err = new Error('ERR_RACK_ID_REQUIRED')
+    err.statusCode = 400
+    throw err
+  }
+
   // Audit: Log HTTP request
   ctx.audit.logRequest(ctx.logger, traceId, 'GET /inference/:jobId', {
     jobId: req.params.jobId,
@@ -234,6 +240,81 @@ async function getRacks (ctx, req) {
     { type: req.query.type },
     { timeout: 10000 }
   )
+}
+
+/**
+ * DELETE /inference/:jobId
+ * Cancel a queued or running job.
+ * Query params: rackId (required)
+ */
+async function cancelJob (ctx, req) {
+  if (!req.query.rackId) {
+    const err = new Error('ERR_RACK_ID_REQUIRED')
+    err.statusCode = 400
+    throw err
+  }
+
+  const traceId = ctx.audit.generateTraceId()
+
+  ctx.audit.logRequest(ctx.logger, traceId, 'DELETE /inference/:jobId', {
+    jobId: req.params.jobId,
+    rackId: req.query.rackId,
+    userId: req.user?.id,
+    ip: req.ip
+  })
+
+  const result = await requestOrchestrator(
+    ctx,
+    'cancelJob',
+    { jobId: req.params.jobId, rackId: req.query.rackId },
+    { timeout: 15000 }
+  )
+
+  ctx.audit.logResponse(ctx.logger, traceId, 'DELETE /inference/:jobId', {
+    cancelled: result.cancelled
+  })
+
+  return result
+}
+
+/**
+ * GET /inference
+ * List jobs from a specific inference rack.
+ * Query params: rackId (required), status (optional), limit (optional, default 50)
+ */
+async function listJobs (ctx, req) {
+  if (!req.query.rackId) {
+    const err = new Error('ERR_RACK_ID_REQUIRED')
+    err.statusCode = 400
+    throw err
+  }
+
+  const traceId = ctx.audit.generateTraceId()
+
+  ctx.audit.logRequest(ctx.logger, traceId, 'GET /inference', {
+    rackId: req.query.rackId,
+    status: req.query.status,
+    limit: req.query.limit,
+    userId: req.user?.id,
+    ip: req.ip
+  })
+
+  const result = await requestOrchestrator(
+    ctx,
+    'listJobs',
+    {
+      rackId: req.query.rackId,
+      status: req.query.status,
+      limit: req.query.limit ? Number(req.query.limit) : undefined
+    },
+    { timeout: 15000 }
+  )
+
+  ctx.audit.logResponse(ctx.logger, traceId, 'GET /inference', {
+    count: result.length
+  })
+
+  return result
 }
 
 /**
@@ -300,6 +381,20 @@ function routes (ctx) {
       url: '/inference/:jobId',
       handler: async (req, rep) => {
         send200(rep, await getInferenceStatus(ctx, req))
+      }
+    },
+    {
+      method: 'DELETE',
+      url: '/inference/:jobId',
+      handler: async (req, rep) => {
+        send200(rep, await cancelJob(ctx, req))
+      }
+    },
+    {
+      method: 'GET',
+      url: '/inference',
+      handler: async (req, rep) => {
+        send200(rep, await listJobs(ctx, req))
       }
     },
     {

@@ -12,6 +12,8 @@ const WrkOrkBase = require('./base.ork.wrk')
  *                        available inference worker for the requested model.
  *  - `listModels`      – aggregates the model catalogue from all model workers.
  *  - `getJobStatus`    – queries a specific inference worker for job state.
+ *  - `cancelJob`       – proxies a cancel request to the owning inference worker.
+ *  - `listJobs`        – proxies a list-jobs request to a specific inference worker.
  *
  * Uses round-robin load balancing over registered racks of type "inference".
  *
@@ -326,6 +328,124 @@ class WrkOrkInference extends WrkOrkBase {
     }
   }
 
+  /**
+   * Cancel a job on a specific inference worker.
+   * @param {Object} req
+   * @param {string} req.jobId  - Job identifier
+   * @param {string} req.rackId - Rack that owns the job
+   * @returns {Promise<Object>} { cancelled: 1|0 }
+   */
+  async cancelJob (req) {
+    const traceId = this.audit.generateTraceId()
+
+    this.audit.logRequest(this.logger, traceId, 'cancelJob', {
+      jobId: req.jobId,
+      rackId: req.rackId
+    })
+
+    try {
+      if (!req.jobId) throw new Error('ERR_JOB_ID_REQUIRED')
+      if (!req.rackId) throw new Error('ERR_RACK_ID_REQUIRED')
+
+      const racks = await this.listRacks({
+        type: 'inference',
+        keys: true,
+        liveOnly: false
+      })
+      const rack = racks.find((r) => r.id === req.rackId)
+
+      if (!rack) throw new Error('ERR_RACK_NOT_FOUND')
+
+      this.audit.logRpcCall(this.logger, traceId, rack.id, 'cancelJob', {
+        jobId: req.jobId
+      })
+
+      const result = await this.net_r0.jRequest(
+        rack.info.rpcPublicKey,
+        'cancelJob',
+        { jobId: req.jobId },
+        { timeout: 10000 }
+      )
+
+      this.audit.logRpcResponse(this.logger, traceId, rack.id, 'cancelJob', {
+        cancelled: result
+      })
+
+      this.audit.logResponse(this.logger, traceId, 'cancelJob', {
+        jobId: req.jobId,
+        rackId: req.rackId,
+        cancelled: result
+      })
+
+      return { cancelled: result }
+    } catch (err) {
+      this.audit.logError(this.logger, traceId, 'cancelJob', err, {
+        jobId: req.jobId,
+        rackId: req.rackId
+      })
+      throw err
+    }
+  }
+
+  /**
+   * List jobs from a specific inference worker.
+   * @param {Object} req
+   * @param {string} req.rackId        - Rack to query
+   * @param {string} [req.status]      - Optional status filter
+   * @param {number} [req.limit=50]    - Max results
+   * @returns {Promise<Object[]>} Array of job records
+   */
+  async listJobs (req) {
+    const traceId = this.audit.generateTraceId()
+
+    this.audit.logRequest(this.logger, traceId, 'listJobs', {
+      rackId: req.rackId,
+      status: req.status,
+      limit: req.limit
+    })
+
+    try {
+      if (!req.rackId) throw new Error('ERR_RACK_ID_REQUIRED')
+
+      const racks = await this.listRacks({
+        type: 'inference',
+        keys: true,
+        liveOnly: false
+      })
+      const rack = racks.find((r) => r.id === req.rackId)
+
+      if (!rack) throw new Error('ERR_RACK_NOT_FOUND')
+
+      this.audit.logRpcCall(this.logger, traceId, rack.id, 'listJobs', {
+        status: req.status,
+        limit: req.limit
+      })
+
+      const jobs = await this.net_r0.jRequest(
+        rack.info.rpcPublicKey,
+        'listJobs',
+        { status: req.status, limit: req.limit },
+        { timeout: 10000 }
+      )
+
+      this.audit.logRpcResponse(this.logger, traceId, rack.id, 'listJobs', {
+        count: jobs.length
+      })
+
+      this.audit.logResponse(this.logger, traceId, 'listJobs', {
+        rackId: req.rackId,
+        count: jobs.length
+      })
+
+      return jobs
+    } catch (err) {
+      this.audit.logError(this.logger, traceId, 'listJobs', err, {
+        rackId: req.rackId
+      })
+      throw err
+    }
+  }
+
   _start (cb) {
     async.series(
       [
@@ -343,6 +463,12 @@ class WrkOrkInference extends WrkOrkBase {
           )
           rpcServer.respond('getJobStatus', (req) =>
             this.net_r0.handleReply('getJobStatus', req)
+          )
+          rpcServer.respond('cancelJob', (req) =>
+            this.net_r0.handleReply('cancelJob', req)
+          )
+          rpcServer.respond('listJobs', (req) =>
+            this.net_r0.handleReply('listJobs', req)
           )
 
           this.logger.info(
