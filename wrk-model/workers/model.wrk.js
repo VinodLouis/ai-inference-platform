@@ -407,14 +407,19 @@ class WrkModel extends WrkBase {
 
         const { LlamaChatSession } = await this._getLlamaRuntime()
         const session = new LlamaChatSession({
-          contextSequence: entry.instance.context.getSequence()
+          contextSequence: entry.instance.context.getSequence(),
+          autoDisposeSequence: true
         })
 
-        const params = req.params || {}
-        const llamaParams = this._buildLlamaParams(params)
+        try {
+          const params = req.params || {}
+          const llamaParams = this._buildLlamaParams(params)
 
-        output = await session.prompt(req.prompt, llamaParams)
-        tokenCount = this._countTokens(output)
+          output = await session.prompt(req.prompt, llamaParams)
+          tokenCount = this._countTokens(output)
+        } finally {
+          session.dispose()
+        }
       } else {
         if (!req.prompt) throw new Error('ERR_PROMPT_REQUIRED')
         output = `[***REMOVED***${entry.meta.name}] ${req.prompt}`
