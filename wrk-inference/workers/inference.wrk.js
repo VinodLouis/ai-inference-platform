@@ -117,7 +117,7 @@ class WrkInference extends WrkBase {
         params: job.params,
         traceId: job.traceId || job.id // Propagate trace ID
       },
-      { timeout: 120000 }
+      { timeout: 60000 }
     )
 
     // Audit: Log RPC response

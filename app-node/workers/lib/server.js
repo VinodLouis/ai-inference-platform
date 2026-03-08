@@ -2,6 +2,48 @@
 
 const auth = require('./auth')
 
+const MAX_INFLIGHT_INFERENCE = Number(
+  process.env.APP_MAX_INFLIGHT_INFERENCE || 5
+)
+let inflightInference = 0
+
+function inferenceConcurrencyPreHandler (ctx, req, rep, done) {
+  if (inflightInference >= MAX_INFLIGHT_INFERENCE) {
+    const traceId = ctx.audit.generateTraceId()
+    ctx.audit.logError(
+      ctx.logger,
+      traceId,
+      'POST /inference',
+      new Error('ERR_TOO_MANY_INFERENCE_REQUESTS'),
+      {
+        event: 'inference_backpressure_reject',
+        method: req.method,
+        url: req.url,
+        ip: req.ip,
+        userId: req.user?.id,
+        inflightInference,
+        maxInFlight: MAX_INFLIGHT_INFERENCE
+      }
+    )
+
+    rep.status(429).header('Retry-After', '1').send({
+      error: 'ERR_TOO_MANY_INFERENCE_REQUESTS',
+      maxInFlight: MAX_INFLIGHT_INFERENCE
+    })
+    return
+  }
+
+  inflightInference++
+  req._inferenceSlotAcquired = true
+  done()
+}
+
+function releaseInferenceSlot (req) {
+  if (!req._inferenceSlotAcquired) return
+  req._inferenceSlotAcquired = false
+  inflightInference = Math.max(0, inflightInference - 1)
+}
+
 /**
  * Shared 200 response helper.
  * @param {Object} rep   - Fastify reply
@@ -17,10 +59,52 @@ function send200 (rep, data) {
  * @param {Object} ctx - Worker context
  * @returns {string} RPC public key
  */
-function pickOrkKey (ctx) {
+function pickOrkKeys (ctx) {
   const orks = Object.values(ctx.conf.orks || {})
   if (!orks.length) throw new Error('ERR_NO_ORCHESTRATOR_CONFIGURED')
-  return orks[0].rpcPublicKey
+
+  const keys = orks.map((ork) => ork.rpcPublicKey).filter(Boolean)
+  if (!keys.length) throw new Error('ERR_NO_ORCHESTRATOR_CONFIGURED')
+
+  return keys
+}
+
+/**
+ * Send an RPC request to available orchestrator keys with failover.
+ * Tries each configured ork key once, starting from a rotating cursor.
+ * @param {Object} ctx - Worker context with network client and logger.
+ * @param {string} method - RPC method name to invoke on ork.
+ * @param {Object} payload - RPC request payload.
+ * @param {Object} [options] - RPC request options (for example timeout).
+ * @returns {Promise<Object>} RPC response payload from the first successful ork.
+ */
+async function requestOrchestrator (ctx, method, payload, options) {
+  const orkKeys = pickOrkKeys(ctx)
+  const start = ctx._orkCursor || 0
+
+  ctx._orkCursor = (start + 1) % orkKeys.length
+
+  let lastErr = null
+
+  for (let i = 0; i < orkKeys.length; i++) {
+    const key = orkKeys[(start + i) % orkKeys.length]
+
+    try {
+      return await ctx.net_r0.jRequest(key, method, payload, options)
+    } catch (err) {
+      lastErr = err
+      ctx.logger.warn(
+        {
+          method,
+          ***REMOVED*** key.substring(0, 16),
+          error: err.message
+        },
+        'orchestrator request failed, trying next'
+      )
+    }
+  }
+
+  throw lastErr || new Error('ERR_ORCHESTRATOR_UNAVAILABLE')
 }
 
 /**
@@ -39,39 +123,65 @@ async function postInference (ctx, req) {
   })
 
   const timer = ctx.audit.createTimer()
-  const orkKey = pickOrkKey(ctx)
+  const orkKeys = pickOrkKeys(ctx)
+  const primaryOrk = orkKeys[0]
+  const roles = req.user?.roles || []
+  const isPremium = roles.includes('premium') || roles.includes('enterprise')
+
+  // Debug: Log tier routing decision
+  ctx.logger.info(
+    {
+      traceId,
+      userId: req.user?.id,
+      roles,
+      isPremium,
+      tier: isPremium ? 'premium' : 'standard'
+    },
+    'Routing tier decision'
+  )
 
   // Attach traceId to propagate through the system
-  const requestBody = { ...req.body, traceId }
+  const requestBody = {
+    ...req.body,
+    traceId,
+    routing: {
+      tier: isPremium ? 'premium' : 'standard',
+      allowSharedFallback: true
+    }
+  }
 
   // Audit: Log RPC call to orchestrator
   ctx.audit.logRpcCall(
     ctx.logger,
     traceId,
-    orkKey.substring(0, 16),
+    primaryOrk.substring(0, 16),
     'routeInference',
     {
       modelId: req.body.modelId
     }
   )
 
-  const result = await ctx.net_r0.jRequest(
-    orkKey,
-    'routeInference',
-    requestBody,
-    {
-      timeout: 120000
-    }
-  )
+  try {
+    const result = await requestOrchestrator(
+      ctx,
+      'routeInference',
+      requestBody,
+      {
+        timeout: 60000
+      }
+    )
 
-  // Audit: Log response
-  ctx.audit.logResponse(ctx.logger, traceId, 'POST /inference', {
-    durationMs: timer(),
-    jobId: result.jobId,
-    status: result.status
-  })
+    // Audit: Log response
+    ctx.audit.logResponse(ctx.logger, traceId, 'POST /inference', {
+      durationMs: timer(),
+      jobId: result.jobId,
+      status: result.status
+    })
 
-  return result
+    return result
+  } finally {
+    releaseInferenceSlot(req)
+  }
 }
 
 /**
@@ -90,9 +200,8 @@ async function getInferenceStatus (ctx, req) {
     ip: req.ip
   })
 
-  const orkKey = pickOrkKey(ctx)
-  const result = await ctx.net_r0.jRequest(
-    orkKey,
+  const result = await requestOrchestrator(
+    ctx,
     'getJobStatus',
     { jobId: req.params.jobId, rackId: req.query.rackId },
     { timeout: 15000 }
@@ -111,8 +220,7 @@ async function getInferenceStatus (ctx, req) {
  * Return the full model catalogue aggregated from all model workers.
  */
 async function getModels (ctx) {
-  const orkKey = pickOrkKey(ctx)
-  return ctx.net_r0.jRequest(orkKey, 'listModels', {}, { timeout: 15000 })
+  return requestOrchestrator(ctx, 'listModels', {}, { timeout: 15000 })
 }
 
 /**
@@ -120,9 +228,8 @@ async function getModels (ctx) {
  * List registered service racks (type filtered via query param).
  */
 async function getRacks (ctx, req) {
-  const orkKey = pickOrkKey(ctx)
-  return ctx.net_r0.jRequest(
-    orkKey,
+  return requestOrchestrator(
+    ctx,
     'listRacks',
     { type: req.query.type },
     { timeout: 10000 }
@@ -169,6 +276,8 @@ function routes (ctx) {
     {
       method: 'POST',
       url: '/inference',
+      preHandler: (req, rep, done) =>
+        inferenceConcurrencyPreHandler(ctx, req, rep, done),
       schema: {
         body: {
           type: 'object',

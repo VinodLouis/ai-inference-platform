@@ -31,14 +31,87 @@ class WrkOrkInference extends WrkOrkBase {
    * @returns {Promise<Object>} Rack entry from registry
    * @throws {Error} ERR_NO_INFERENCE_WORKERS if no racks are available
    */
-  async _pickRack (modelId) {
+  _isDedicatedRack (rack) {
+    return rack?.info?.dedicated === true || rack?.info?.tier === 'premium'
+  }
+
+  _pickByRoundRobin (racks) {
+    if (!racks.length) return []
+
+    const start = this._rrIndex % racks.length
+    this._rrIndex++
+
+    const ordered = []
+    for (let i = 0; i < racks.length; i++) {
+      ordered.push(racks[(start + i) % racks.length])
+    }
+
+    return ordered
+  }
+
+  async _pickRack (modelId, routing = {}) {
     const racks = await this.listRacks({ type: 'inference', keys: true })
 
     if (!racks.length) throw new Error('ERR_NO_INFERENCE_WORKERS')
 
-    const rack = racks[this._rrIndex % racks.length]
-    this._rrIndex++
-    return rack
+    const tier = routing.tier || 'standard'
+    const allowSharedFallback = routing.allowSharedFallback !== false
+
+    const dedicated = racks.filter((rack) => this._isDedicatedRack(rack))
+    const shared = racks.filter((rack) => !this._isDedicatedRack(rack))
+
+    // Debug: Log rack selection details
+    this.logger.info(
+      {
+        tier,
+        allowSharedFallback,
+        totalRacks: racks.length,
+        dedicatedRacks: dedicated.map((r) => r.id),
+        sharedRacks: shared.map((r) => r.id)
+      },
+      'Rack selection filtering'
+    )
+
+    let candidates = []
+    if (tier === 'premium') {
+      candidates = allowSharedFallback
+        ? dedicated.concat(shared)
+        : dedicated.slice()
+    } else {
+      candidates = shared.length ? shared : racks
+    }
+
+    if (!candidates.length) {
+      throw new Error('ERR_NO_RACKS_FOR_TIER')
+    }
+
+    const ordered = this._pickByRoundRobin(candidates)
+
+    // Debug: Log selected rack order
+    this.logger.info(
+      {
+        tier,
+        candidates: ordered.map((r) => ({
+          id: r.id,
+          dedicated: this._isDedicatedRack(r)
+        }))
+      },
+      'Rack selection result'
+    )
+
+    return ordered
+  }
+
+  async _markRackFailureSafe (rack, error) {
+    try {
+      await this.markRackFailure({
+        id: rack.id,
+        error: error?.message,
+        threshold: 3
+      })
+    } catch (e) {
+      this.debugError(`markRackFailure rack=${rack.id}`, e)
+    }
   }
 
   /**
@@ -64,33 +137,52 @@ class WrkOrkInference extends WrkOrkBase {
       if (!req.modelId) throw new Error('ERR_MODEL_ID_REQUIRED')
       if (!req.prompt && !req.inputs) throw new Error('ERR_INPUT_REQUIRED')
 
-      const rack = await this._pickRack(req.modelId)
+      const racks = await this._pickRack(req.modelId, req.routing || {})
+      let lastError = null
 
-      // Audit: RPC call to inference worker
-      this.audit.logRpcCall(this.logger, traceId, rack.id, 'runInference', {
-        modelId: req.modelId
-      })
+      for (const rack of racks) {
+        try {
+          // Audit: RPC call to inference worker
+          this.audit.logRpcCall(this.logger, traceId, rack.id, 'runInference', {
+            modelId: req.modelId
+          })
 
-      const result = await this.net_r0.jRequest(
-        rack.info.rpcPublicKey,
-        'runInference',
-        req,
-        { timeout: 120000 }
-      )
+          const result = await this.net_r0.jRequest(
+            rack.info.rpcPublicKey,
+            'runInference',
+            req,
+            { timeout: 60000 }
+          )
 
-      // Audit: Successful routing and response
-      this.audit.logRpcResponse(this.logger, traceId, rack.id, 'runInference', {
-        jobId: result.jobId,
-        status: result.status
-      })
+          await this.heartbeatRack({ id: rack.id })
 
-      this.audit.logResponse(this.logger, traceId, 'routeInference', {
-        jobId: result.jobId,
-        rackId: rack.id,
-        modelId: req.modelId
-      })
+          // Audit: Successful routing and response
+          this.audit.logRpcResponse(
+            this.logger,
+            traceId,
+            rack.id,
+            'runInference',
+            {
+              jobId: result.jobId,
+              status: result.status
+            }
+          )
 
-      return { ...result, rackId: rack.id }
+          this.audit.logResponse(this.logger, traceId, 'routeInference', {
+            jobId: result.jobId,
+            rackId: rack.id,
+            modelId: req.modelId
+          })
+
+          return { ...result, rackId: rack.id }
+        } catch (err) {
+          lastError = err
+          await this._markRackFailureSafe(rack, err)
+        }
+      }
+
+      if (lastError) throw lastError
+      throw new Error('ERR_INFERENCE_RACKS_UNAVAILABLE')
     } catch (err) {
       // Audit: Routing failed
       this.audit.logError(this.logger, traceId, 'routeInference', err, {
@@ -191,7 +283,11 @@ class WrkOrkInference extends WrkOrkBase {
       if (!req.jobId) throw new Error('ERR_JOB_ID_REQUIRED')
       if (!req.rackId) throw new Error('ERR_RACK_ID_REQUIRED')
 
-      const racks = await this.listRacks({ type: 'inference', keys: true })
+      const racks = await this.listRacks({
+        type: 'inference',
+        keys: true,
+        liveOnly: false
+      })
       const rack = racks.find((r) => r.id === req.rackId)
 
       if (!rack) throw new Error('ERR_RACK_NOT_FOUND')

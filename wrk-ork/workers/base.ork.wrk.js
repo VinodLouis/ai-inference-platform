@@ -33,6 +33,18 @@ class WrkOrkBase extends WrkBase {
     super.init()
   }
 
+  _isRackLive (rack, now = Date.now()) {
+    const health = rack?.health || {}
+    if (health.status && health.status !== 'up') return false
+
+    const leaseMs = Number(health.leaseMs) || 0
+    const lastSeenAt = Number(health.lastSeenAt) || 0
+
+    if (leaseMs <= 0) return true
+    if (!lastSeenAt) return true
+    return now - lastSeenAt <= leaseMs
+  }
+
   /**
    * Centralised debug / alert helper used across orchestrator methods.
    * @param {*} data
@@ -73,7 +85,30 @@ class WrkOrkBase extends WrkBase {
         throw new Error('ERR_RACK_RPC_KEY_INVALID')
       }
 
-      await this.racks.put(req.id, req)
+      const now = Date.now()
+      const leaseMs = Number(req.leaseMs || req.info.leaseMs || 0)
+      const existing = await this.racks.get(req.id)
+
+      const nextRack = {
+        ...(existing?.value || {}),
+        ...req,
+        info: {
+          ...(existing?.value?.info || {}),
+          ...(req.info || {}),
+          leaseMs
+        },
+        health: {
+          ...(existing?.value?.health || {}),
+          status: 'up',
+          leaseMs,
+          lastSeenAt: now,
+          failCount: 0
+        },
+        updatedAt: now,
+        registeredAt: existing?.value?.registeredAt || now
+      }
+
+      await this.racks.put(req.id, nextRack)
 
       this.logger.info({ rackId: req.id, type: req.type }, 'rack registered')
 
@@ -93,6 +128,57 @@ class WrkOrkBase extends WrkBase {
       })
       throw err
     }
+  }
+
+  async heartbeatRack (req) {
+    if (!req.id) throw new Error('ERR_RACK_ID_INVALID')
+
+    const row = await this.racks.get(req.id)
+    if (!row || !row.value) throw new Error('ERR_RACK_NOT_FOUND')
+
+    const now = Date.now()
+    const current = row.value
+    const leaseMs = Number(req.leaseMs || current.health?.leaseMs || 0)
+    const nextRack = {
+      ...current,
+      updatedAt: now,
+      health: {
+        ...(current.health || {}),
+        status: 'up',
+        leaseMs,
+        lastSeenAt: now,
+        failCount: 0
+      }
+    }
+
+    await this.racks.put(req.id, nextRack)
+    return 1
+  }
+
+  async markRackFailure (req) {
+    if (!req.id) throw new Error('ERR_RACK_ID_INVALID')
+
+    const row = await this.racks.get(req.id)
+    if (!row || !row.value) return 0
+
+    const now = Date.now()
+    const current = row.value
+    const failCount = Number(current.health?.failCount || 0) + 1
+    const threshold = Number(req.threshold || 3)
+    const nextRack = {
+      ...current,
+      updatedAt: now,
+      health: {
+        ...(current.health || {}),
+        failCount,
+        status: failCount >= threshold ? 'down' : 'up',
+        lastFailureAt: now,
+        lastError: req.error || null
+      }
+    }
+
+    await this.racks.put(req.id, nextRack)
+    return failCount
   }
 
   /**
@@ -169,10 +255,15 @@ class WrkOrkBase extends WrkBase {
 
       const stream = this.racks.createReadStream()
       const res = []
+      const now = Date.now()
+      const liveOnly = req.liveOnly !== false
 
       for await (const data of stream) {
         const entry = data.value
-        if (!req.type || entry.type.startsWith(req.type)) {
+        if (
+          (!req.type || entry.type.startsWith(req.type)) &&
+          (!liveOnly || this._isRackLive(entry, now))
+        ) {
           res.push(entry)
         }
       }
@@ -224,6 +315,12 @@ class WrkOrkBase extends WrkBase {
           )
           rpcServer.respond('listRacks', (req) =>
             this.net_r0.handleReply('listRacks', req)
+          )
+          rpcServer.respond('heartbeatRack', (req) =>
+            this.net_r0.handleReply('heartbeatRack', req)
+          )
+          rpcServer.respond('markRackFailure', (req) =>
+            this.net_r0.handleReply('markRackFailure', req)
           )
         }
       ],

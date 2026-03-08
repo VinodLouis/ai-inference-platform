@@ -1,6 +1,6 @@
 # AI Inference Platform
 
-A decentralised, microservice-based AI inference platform built on [Hyperswarm RPC](https://github.com/holepunchto/hyperswarm-rpc). Instead of relying on a central broker, services discover each other through a DHT-backed registry, making the platform naturally resilient to node failures and easy to scale horizontally.
+A decentralised, microservice-based AI inference platform built on [Hyperswarm RPC](https://www.npmjs.com/package/hyperswarm). Instead of relying on a central broker, services discover each other through a DHT-backed registry, making the platform naturally resilient to node failures and easy to scale horizontally.
 
 This platform focuses on text generation with **GGUF quantized LLM models** from Hugging Face, using `node-llama-cpp`.
 
@@ -459,6 +459,183 @@ Loads and manages GGUF models using `node-llama-cpp`. Handles model downloads fr
 
 ---
 
+## Audit Logging & Tracing
+
+All services emit structured audit logs in **NDJSON** (newline-delimited JSON) format to `stdout`. Each log event carries a `traceId` that propagates across service boundaries, making it easy to correlate events from a single user request as it flows through the platform.
+
+### Architecture
+
+Audit logging is implemented at two layers:
+
+1. **HTTP Gateway (`app-node`)** – Logs all HTTP requests, RPC calls, authentication events, and errors
+2. **Orchestrator (`wrk-ork`)** – Logs rack registration, heartbeats, failures, and routing decisions
+
+Each service writes logs to `stdout` in NDJSON format. In production, redirect these to a log aggregation system (Loki, Elasticsearch, CloudWatch, etc.) for centralized querying.
+
+**Trace ID propagation flow:**
+
+```
+HTTP Request → Gateway generates traceId
+              ↓
+         Gateway logs REQUEST_RECEIVED
+              ↓
+         Gateway calls Orchestrator RPC (includes traceId)
+              ↓
+         Orchestrator logs RACK_ROUTE_SELECTED (inherits traceId)
+              ↓
+         Gateway logs RPC_CALL_SUCCESS or RPC_CALL_ERROR
+              ↓
+         Gateway logs REQUEST_COMPLETED
+```
+
+All log events for a single request share the same `traceId`, enabling you to reconstruct the full request path using a simple grep or log query.
+
+### Event Types
+
+#### HTTP Gateway Events (`app-node`)
+
+| Event Type | Description | When Logged |
+|------------|-------------|-------------|
+| `REQUEST_RECEIVED` | HTTP request started | Before route handler executes |
+| `REQUEST_COMPLETED` | HTTP request finished | After response is sent |
+| `AUTH_SIGNUP_SUCCESS` | User registration succeeded | After user created in DB |
+| `AUTH_SIGNUP_FAILURE` | User registration failed | On validation or DB error |
+| `AUTH_LOGIN_SUCCESS` | User login succeeded | After token generation |
+| `AUTH_LOGIN_FAILURE` | User login failed | On invalid credentials |
+| `AUTH_INVALID_TOKEN` | Token verification failed | On protected route access with bad token |
+| `RPC_CALL_SUCCESS` | Orchestrator RPC call succeeded | After successful RPC response |
+| `RPC_CALL_ERROR` | Orchestrator RPC call failed | On RPC timeout or error |
+| `REQUEST_VALIDATION_ERROR` | Request body validation failed | On schema mismatch |
+| `INTERNAL_ERROR` | Unexpected server error | On uncaught exceptions |
+
+#### Orchestrator Events (`wrk-ork`)
+
+| Event Type | Description | When Logged |
+|------------|-------------|-------------|
+| `RACK_REGISTERED` | New rack joined the registry | On `registerRack` RPC call |
+| `RACK_HEARTBEAT_RECEIVED` | Rack sent heartbeat | On `heartbeatRack` RPC call |
+| `RACK_FAILURE_MARKED` | Rack marked as failed | On explicit failure signal or lease expiry |
+| `RACK_ROUTE_SELECTED` | Rack chosen for request | During routing decision |
+| `NO_RACKS_AVAILABLE` | No healthy racks found | When routing fails due to empty registry |
+
+### Log Format
+
+All logs follow this structure:
+
+```json
+{
+  "timestamp": "2026-03-08T14:32:15.123Z",
+  "level": "info",
+  "service": "app-node",
+  "traceId": "a7b3c9d1e5f2",
+  "event": "REQUEST_RECEIVED",
+  "method": "POST",
+  "url": "/inference",
+  "userId": "user@example.com",
+  "ip": "127.0.0.1"
+}
+```
+
+**Common fields:**
+
+- `timestamp` – ISO 8601 timestamp (UTC)
+- `level` – `info`, `warn`, or `error`
+- `service` – service name (`app-node`, `wrk-ork`, etc.)
+- `traceId` – unique ID for request correlation (12-char hex string)
+- `event` – event type (see tables above)
+
+**Additional context fields** vary by event type (e.g., `method`, `url`, `statusCode`, `rackId`, `modelId`).
+
+### Trace Propagation Example
+
+Here's a full trace of a single inference request flowing through the platform:
+
+#### 1. HTTP Gateway receives request
+
+```json
+{"timestamp":"2026-03-08T14:32:15.123Z","level":"info","service":"app-node","traceId":"a7b3c9d1e5f2","event":"REQUEST_RECEIVED","method":"POST","url":"/inference","userId":"user@example.com","ip":"127.0.0.1"}
+```
+
+#### 2. Orchestrator selects rack
+
+```json
+{"timestamp":"2026-03-08T14:32:15.145Z","level":"info","service":"wrk-ork","traceId":"a7b3c9d1e5f2","event":"RACK_ROUTE_SELECTED","rackId":"inference-rack-1","tier":"premium","dedicated":true,"routingStrategy":"round-robin"}
+```
+
+#### 3. Gateway calls orchestrator successfully
+
+```json
+{"timestamp":"2026-03-08T14:32:15.234Z","level":"info","service":"app-node","traceId":"a7b3c9d1e5f2","event":"RPC_CALL_SUCCESS","method":"forwardInference","rackId":"inference-rack-1","latencyMs":89}
+```
+
+#### 4. Gateway completes request
+
+```json
+{"timestamp":"2026-03-08T14:32:15.256Z","level":"info","service":"app-node","traceId":"a7b3c9d1e5f2","event":"REQUEST_COMPLETED","statusCode":200,"latencyMs":133}
+```
+
+All four events share the same `traceId: "a7b3c9d1e5f2"`, making it trivial to reconstruct the full request flow.
+
+### Querying Logs by Trace ID
+
+Since logs are NDJSON, you can use standard Unix tools to filter by trace ID:
+
+```sh
+# Find all events for a specific trace
+grep '"traceId":"a7b3c9d1e5f2"' app-node.log
+
+# Pretty-print with jq
+grep '"traceId":"a7b3c9d1e5f2"' app-node.log | jq .
+
+# Count events per trace
+grep '"traceId"' app-node.log | jq -r .traceId | sort | uniq -c | sort -rn
+```
+
+For production systems, use your log aggregation platform's query language:
+
+**Loki (LogQL):**
+```logql
+{service="app-node"} | json | traceId="a7b3c9d1e5f2"
+```
+
+**Elasticsearch:**
+```json
+{
+  "query": {
+    "term": { "traceId": "a7b3c9d1e5f2" }
+  }
+}
+```
+
+**CloudWatch Logs Insights:**
+```
+fields @timestamp, event, statusCode
+| filter traceId = "a7b3c9d1e5f2"
+| sort @timestamp asc
+```
+
+### Error Trace Example
+
+When errors occur, the trace includes failure context:
+
+```json
+{"timestamp":"2026-03-08T14:45:22.123Z","level":"info","service":"app-node","traceId":"x9y8z7w6v5u4","event":"REQUEST_RECEIVED","method":"POST","url":"/inference"}
+{"timestamp":"2026-03-08T14:45:22.456Z","level":"error","service":"app-node","traceId":"x9y8z7w6v5u4","event":"RPC_CALL_ERROR","method":"forwardInference","error":"RPC_TIMEOUT","message":"No response from orchestrator after 10000ms"}
+{"timestamp":"2026-03-08T14:45:22.478Z","level":"error","service":"app-node","traceId":"x9y8z7w6v5u4","event":"REQUEST_COMPLETED","statusCode":503,"latencyMs":355}
+```
+
+This shows the request failed due to an RPC timeout, and the gateway returned HTTP 503.
+
+### Best Practices
+
+1. **Always include traceId in API responses** – Return the trace ID in HTTP headers or response bodies so clients can reference it when reporting issues
+2. **Set log retention policies** – NDJSON logs can grow quickly; rotate daily and archive to object storage
+3. **Index key fields** – If shipping to Elasticsearch/Loki, index `traceId`, `userId`, `event`, `statusCode` for fast queries
+4. **Monitor error rates** – Alert on spikes in `RPC_CALL_ERROR`, `AUTH_LOGIN_FAILURE`, or `INTERNAL_ERROR` events
+5. **Correlate with metrics** – Combine trace logs with metrics (request rate, latency histograms) for full observability
+
+---
+
 ## Testing & Development
 
 ### CLI testing with `hp-rpc-cli`
@@ -672,6 +849,14 @@ Verify:
 2. The `Authorization: Bearer <token>` header is present in your request
 3. `auth.protectedRoutes` is `true` in `app-node/config/common.json`
 4. The token hasn't expired (default 24 hours)
+
+---
+
+## Scalability Testing
+
+For full step-by-step scalability validation (instance counts, rack topology, user role combinations, failover checks, premium routing checks, and ork failover), see:
+
+- [SCALABILITY-TEST-README.md](SCALABILITY-TEST-README.md)
 
 ---
 
