@@ -892,6 +892,16 @@ Verify:
 
 ---
 
+## Dynamic Runtime Model Registration
+
+One of the strongest use cases of this platform is dynamically registering models at runtime (no service restart), so you can roll out or switch LLMs quickly.
+
+For the focused runtime flow (Gemma 3 1B + Phi-2 2.7B), registration commands, unload commands, and verification, see:
+
+- [wrk-model/PROVIDERS.md](wrk-model/PROVIDERS.md)
+
+---
+
 ## Scalability Testing
 
 For full step-by-step scalability validation (instance counts, rack topology, user role combinations, failover checks, premium routing checks, and ork failover), see:

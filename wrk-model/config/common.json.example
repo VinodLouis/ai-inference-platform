@@ -1,28 +1,40 @@
 {
   "debug": 0,
   "runtime": {
-    "provider": "node-llama-cpp",
-    "modelBaseDir": "./models",
-    "modelCacheDir": "./models/.cache"
+    "providers": [
+      {
+        "type": "llama-cpp",
+        "enabled": true,
+        "settings": {
+          "modelBaseDir": "./models",
+          "modelCacheDir": "./models/.cache"
+        }
+      },
+      {
+        "type": "ollama",
+        "enabled": false,
+        "endpoint": "http://localhost:11434"
+      }
+    ]
   },
   "models": [
     {
       "id": "tinyllama-1.1b",
       "name": "TinyLlama 1.1B Chat",
       "type": "text-generation",
+      "provider": "llama-cpp",
       "format": "gguf",
+      "quantization": "Q4_K_M",
+      "contextLength": 2048,
       "path": "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf",
       "source": {
         "type": "huggingface",
         "repo": "TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF",
         "revision": "main",
-        "files": [
-          "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"
-        ],
+        "files": ["tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"],
         "tokenEnv": "HF_TOKEN"
       },
-      "autoload": true,
-      "contextLength": 2048
+      "autoload": true
     }
   ]
 }

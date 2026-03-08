@@ -35,7 +35,8 @@ class WrkModel extends WrkBase {
     this.prefix = `wrk-model-${ctx.rack}`
 
     this.mem = {
-      models: {} // modelId → { meta, instance, loadedAt }
+      models: {}, // modelId → { meta, instance, loadedAt }
+      providers: {} // providerType → { config, Provider }
     }
 
     this.init()
@@ -56,17 +57,49 @@ class WrkModel extends WrkBase {
     return this.mem.models
   }
 
-  _getRuntimeProvider () {
-    return this.conf.runtime?.provider || 'stub'
+  _ensureProviderMem () {
+    if (!this.mem || typeof this.mem !== 'object') this.mem = {}
+    if (!this.mem.providers || typeof this.mem.providers !== 'object') {
+      this.mem.providers = {}
+    }
+    return this.mem.providers
+  }
+
+  /**
+   * Get loaded provider instance by type.
+   * @param {string} providerType - e.g., 'llama-cpp', 'ollama'
+   * @returns {Object} { Provider, config }
+   * @throws if provider not initialized
+   */
+  _getProvider (providerType) {
+    const providers = this._ensureProviderMem()
+    if (!providers[providerType]) {
+      throw new Error(`ERR_PROVIDER_NOT_CONFIGURED:${providerType}`)
+    }
+    return providers[providerType]
   }
 
   _getModelBaseDir () {
-    return this.conf.runtime?.modelBaseDir || process.cwd()
+    const runtimeBaseDir = this.conf.runtime?.modelBaseDir
+    if (runtimeBaseDir) return runtimeBaseDir
+
+    const llamaProvider = (this.conf.runtime?.providers || []).find(
+      (provider) => provider?.type === 'llama-cpp'
+    )
+
+    return llamaProvider?.settings?.modelBaseDir || process.cwd()
   }
 
   _getModelCacheDir () {
+    const runtimeCacheDir = this.conf.runtime?.modelCacheDir
+    if (runtimeCacheDir) return runtimeCacheDir
+
+    const llamaProvider = (this.conf.runtime?.providers || []).find(
+      (provider) => provider?.type === 'llama-cpp'
+    )
+
     return (
-      this.conf.runtime?.modelCacheDir ||
+      llamaProvider?.settings?.modelCacheDir ||
       path.resolve(this._getModelBaseDir(), '.cache')
     )
   }
@@ -84,24 +117,11 @@ class WrkModel extends WrkBase {
     )
   }
 
-  _countTokens (text) {
-    return String(text).trim().split(/\s+/).filter(Boolean).length
-  }
-
   _buildHfHeaders (source) {
     const tokenEnv = source.tokenEnv || 'HF_TOKEN'
     const token =
       source.token || process.env[tokenEnv] || process.env.HUGGINGFACE_TOKEN
     return token ? { Authorization: `Bearer ${token}` } : {}
-  }
-
-  _buildLlamaParams (params = {}) {
-    return {
-      maxTokens: params.max_tokens || params.maxTokens || 50,
-      temperature: params.temperature ?? 0.8,
-      topP: params.top_p ?? params.topP ?? 0.95,
-      topK: params.top_k ?? params.topK ?? 40
-    }
   }
 
   async _disposeResource (resource, methodName) {
@@ -215,29 +235,48 @@ class WrkModel extends WrkBase {
     return path.resolve(baseDir, modelPath)
   }
 
-  async _getLlamaRuntime () {
-    if (this.mem.llamaRuntime) return this.mem.llamaRuntime
+  /**
+   * Initialize all configured inference providers at startup.
+   * @returns {Promise<void>}
+   */
+  async _initProviders () {
+    const providerConfigs = this.conf.runtime?.providers || []
+    const providers = this._ensureProviderMem()
 
-    let llamaMod
-    try {
-      llamaMod = await import('node-llama-cpp')
-    } catch (e) {
-      throw new Error('ERR_NODE_LLAMA_CPP_NOT_INSTALLED')
+    for (const providerConfig of providerConfigs) {
+      if (!providerConfig.enabled) continue
+
+      const providerType = providerConfig.type
+      if (!providerType) {
+        this.logger.warn({ providerConfig }, 'provider missing type')
+        continue
+      }
+
+      try {
+        const ProviderClass = require(`../providers/${providerType}-provider`)
+        const instance = await ProviderClass.initialize(providerConfig)
+
+        providers[providerType] = {
+          Provider: ProviderClass,
+          config: providerConfig,
+          instance
+        }
+
+        this.logger.info({ provider: providerType }, 'provider initialized')
+      } catch (err) {
+        this.logger.error(
+          { provider: providerType, err },
+          'provider initialization failed'
+        )
+        throw err
+      }
     }
-
-    const { getLlama, LlamaChatSession } = llamaMod
-    const llama = await getLlama()
-
-    this.mem.llamaRuntime = { llama, LlamaChatSession }
-    return this.mem.llamaRuntime
   }
 
   // ─── Model catalogue ─────────────────────────────────────────────────────
 
   /**
-   * Return all models declared in config, annotated with loaded state.
-   * config.models should be an array of model descriptor objects:
-   *   [{ id, name, path, quantization, contextLength }]
+   * Return all models: config + runtime registered, annotated with loaded state.
    *
    * @returns {Promise<Object[]>}
    */
@@ -245,19 +284,29 @@ class WrkModel extends WrkBase {
     const declared = this.conf.models || []
     const models = this._ensureModelMem()
 
-    return declared.map((m) => ({
+    // Fetch runtime-registered models
+    const runtimeModels = []
+    for await (const { value } of this.runtimeModels.createReadStream()) {
+      runtimeModels.push(value)
+    }
+
+    const allModels = [...declared, ...runtimeModels]
+
+    return allModels.map((m) => ({
       id: m.id,
       name: m.name,
       type: m.type || 'text-generation',
+      provider: m.provider || 'unknown',
       format: m.format || null,
       quantization: m.quantization || null,
       contextLength: m.contextLength || null,
-      loaded: !!models[m.id]
+      loaded: !!models[m.id],
+      source: m.registeredAt ? 'runtime' : 'config'
     }))
   }
 
   /**
-   * Return metadata for a single model.
+   * Return metadata for a single model (config or runtime).
    * @param {Object} req
    * @param {string} req.modelId
    * @returns {Promise<Object>}
@@ -265,20 +314,84 @@ class WrkModel extends WrkBase {
   async getModelInfo (req) {
     if (!req.modelId) throw new Error('ERR_MODEL_ID_REQUIRED')
 
-    const declared = (this.conf.models || []).find((m) => m.id === req.modelId)
+    // Check config first
+    let declared = (this.conf.models || []).find((m) => m.id === req.modelId)
+
+    // Then check runtime registry
+    if (!declared) {
+      const runtimeEntry = await this.runtimeModels.get(req.modelId)
+      declared = runtimeEntry?.value
+    }
+
     if (!declared) throw new Error('ERR_MODEL_NOT_FOUND')
+
     const models = this._ensureModelMem()
 
     return {
       ...declared,
-      loaded: !!models[req.modelId]
+      loaded: !!models[req.modelId],
+      source: declared.registeredAt ? 'runtime' : 'config'
     }
+  }
+
+  /**
+   * Register a model at runtime (no config restart needed).
+   * @param {Object} req
+   * @param {string} req.id - unique model id
+   * @param {string} req.name - display name
+   * @param {string} req.provider - 'llama-cpp' | 'ollama'
+   * @param {string} req.modelPath - local path or model identifier
+   * @param {Object} [req.source] - optional remote source metadata (e.g. Hugging Face)
+   * @param {boolean} [req.autoload] - if true, load immediately after registration
+   * @param {Object} [req.config] - optional metadata
+   * @returns {Promise<{success: true, modelId}>}
+   */
+  async registerModel (req) {
+    if (!req.id || !req.provider) {
+      throw new Error('ERR_MISSING_REQUIRED_FIELDS:id and provider')
+    }
+
+    // Validate provider is configured
+    try {
+      this._getProvider(req.provider)
+    } catch (err) {
+      throw new Error(`ERR_PROVIDER_NOT_AVAILABLE:${req.provider}`)
+    }
+
+    const modelMeta = {
+      id: req.id,
+      name: req.name || req.id,
+      type: 'text-generation',
+      provider: req.provider,
+      path: req.modelPath || req.modelName,
+      modelName: req.modelName,
+      source: req.source,
+      autoload: !!req.autoload,
+      contextLength: req.config?.contextLength,
+      quantization: req.config?.quantization,
+      format: req.config?.format,
+      registeredAt: Date.now()
+    }
+
+    // Persist in Hyperbee
+    await this.runtimeModels.put(req.id, modelMeta)
+    this.logger.info(
+      { modelId: req.id, provider: req.provider },
+      'model registered'
+    )
+
+    if (modelMeta.autoload) {
+      await this._loadModel(req.id)
+    }
+
+    return { success: true, modelId: req.id }
   }
 
   // ─── Model lifecycle ─────────────────────────────────────────────────────
 
   /**
    * Load a model into memory.
+   * Supports both config-defined and runtime-registered models.
    *
    * @param {string} modelId
    * @returns {Promise<void>}
@@ -287,42 +400,60 @@ class WrkModel extends WrkBase {
     const models = this._ensureModelMem()
     if (models[modelId]) return // already loaded
 
-    const declared = (this.conf.models || []).find((m) => m.id === modelId)
+    // Find model in config or runtime registry
+    let declared = (this.conf.models || []).find((m) => m.id === modelId)
+
+    if (!declared) {
+      const runtimeEntry = await this.runtimeModels.get(modelId)
+      declared = runtimeEntry?.value
+    }
+
     if (!declared) throw new Error('ERR_MODEL_NOT_FOUND')
+
+    // Materialize model metadata (handle HF downloads, etc)
     const modelMeta = await this._materializeModelMeta(declared)
 
-    this.logger.info({ modelId }, 'loading model…')
+    // Get provider for this model
+    const providerEntry = this._getProvider(modelMeta.provider)
+    const ProviderClass = providerEntry.Provider
 
-    const provider = this._getRuntimeProvider()
-    let instance
+    this.logger.info(
+      { modelId, provider: modelMeta.provider },
+      'loading model…'
+    )
 
-    if (provider === 'node-llama-cpp') {
-      if (!modelMeta.path) throw new Error('ERR_MODEL_PATH_REQUIRED')
-      const resolvedPath = this._resolveModelPath(modelMeta.path)
-
-      const { llama } = await this._getLlamaRuntime()
-      const model = await llama.loadModel({ modelPath: resolvedPath })
-      const context = await model.createContext()
-
-      instance = {
-        provider,
-        modelPath: resolvedPath,
-        model,
-        context
+    try {
+      // Inject provider endpoint if needed (for Ollama)
+      if (modelMeta.provider === 'ollama' && providerEntry.instance.endpoint) {
+        modelMeta._ollamaEndpoint = providerEntry.instance.endpoint
       }
-    } else {
-      instance = {
-        path: modelMeta.path,
-        provider: 'stub'
-      }
-    }
 
-    models[modelId] = {
-      meta: modelMeta,
-      instance,
-      loadedAt: Date.now()
+      // Load model using provider
+      let providerModelPath = modelMeta.path || modelMeta.modelName
+      if (modelMeta.provider === 'llama-cpp') {
+        providerModelPath = this._resolveModelPath(providerModelPath)
+      }
+
+      const instance = await ProviderClass.loadModel(
+        providerModelPath,
+        modelMeta
+      )
+
+      models[modelId] = {
+        meta: modelMeta,
+        instance,
+        provider: ProviderClass,
+        loadedAt: Date.now()
+      }
+
+      this.logger.info(
+        { modelId, provider: modelMeta.provider },
+        'model loaded'
+      )
+    } catch (err) {
+      this.logger.error({ modelId, err }, 'model load failed')
+      throw err
     }
-    this.logger.info({ modelId, provider }, 'model loaded')
   }
 
   /**
@@ -340,17 +471,29 @@ class WrkModel extends WrkBase {
 
     const modelEntry = models[req.modelId]
     const instance = modelEntry.instance || {}
+    const ProviderClass = modelEntry.provider
 
-    await Promise.all([
-      this._disposeResource(instance.context, 'dispose'),
-      this._disposeResource(instance.model, 'dispose'),
-      this._disposeResource(instance.session, 'release'),
-      this._disposeResource(instance.pipeline, 'dispose')
-    ])
+    try {
+      // Use provider's unload method if available
+      if (ProviderClass && typeof ProviderClass.unload === 'function') {
+        await ProviderClass.unload(instance)
+      } else {
+        // Fallback: try generic disposal
+        await Promise.all([
+          this._disposeResource(instance.context, 'dispose'),
+          this._disposeResource(instance.model, 'dispose'),
+          this._disposeResource(instance.session, 'release'),
+          this._disposeResource(instance.pipeline, 'dispose')
+        ])
+      }
 
-    delete models[req.modelId]
-    this.logger.info({ modelId: req.modelId }, 'model unloaded')
-    return 1
+      delete models[req.modelId]
+      this.logger.info({ modelId: req.modelId }, 'model unloaded')
+      return 1
+    } catch (err) {
+      this.logger.error({ modelId: req.modelId, err }, 'model unload failed')
+      throw err
+    }
   }
 
   /**
@@ -368,7 +511,7 @@ class WrkModel extends WrkBase {
   // ─── Inference execution ─────────────────────────────────────────────────
 
   /**
-   * Run inference for a single prompt.
+   * Run inference for a single prompt using the appropriate provider.
    * Called by WrkInference over RPC.
    *
    * @param {Object} req
@@ -392,52 +535,34 @@ class WrkModel extends WrkBase {
     })
 
     try {
-      await this._loadModel(req.modelId) // lazy load
+      if (!req.prompt) throw new Error('ERR_PROMPT_REQUIRED')
+
+      // Auto-load if not loaded
+      await this._loadModel(req.modelId)
 
       const models = this._ensureModelMem()
       const entry = models[req.modelId]
-      const start = Date.now()
 
-      let output
-      let tokenCount = 0
-      const provider = entry.instance.provider || 'stub'
+      if (!entry) throw new Error('ERR_MODEL_LOAD_FAILED')
 
-      if (provider === 'node-llama-cpp') {
-        if (!req.prompt) throw new Error('ERR_PROMPT_REQUIRED')
+      const ProviderClass = entry.provider
 
-        const { LlamaChatSession } = await this._getLlamaRuntime()
-        const session = new LlamaChatSession({
-          contextSequence: entry.instance.context.getSequence(),
-          autoDisposeSequence: true
-        })
+      // Normalize params using provider
+      const params = ProviderClass.normalizeParams(req.params || {})
 
-        try {
-          const params = req.params || {}
-          const llamaParams = this._buildLlamaParams(params)
-
-          output = await session.prompt(req.prompt, llamaParams)
-          tokenCount = this._countTokens(output)
-        } finally {
-          session.dispose()
-        }
-      } else {
-        if (!req.prompt) throw new Error('ERR_PROMPT_REQUIRED')
-        output = `[***REMOVED***${entry.meta.name}] ${req.prompt}`
-        tokenCount = this._countTokens(output)
-      }
-
-      const result = {
-        output,
-        tokens: tokenCount,
-        latencyMs: Date.now() - start
-      }
+      // Execute inference
+      const result = await ProviderClass.generate(
+        entry.instance,
+        req.prompt,
+        params
+      )
 
       // Audit: Log successful response
       this.audit.logResponse(this.logger, traceId, 'runModel', {
         modelId: req.modelId,
-        tokens: tokenCount,
+        tokens: result.tokens,
         durationMs: timer(),
-        provider
+        provider: entry.meta.provider
       })
 
       return result
@@ -459,6 +584,16 @@ class WrkModel extends WrkBase {
           super._start(next)
         },
         async () => {
+          // Initialize Hyperbee for runtime model registry
+          this.runtimeModels = await this.store_s0.getBee(
+            { name: 'runtime-models' },
+            { keyEncoding: 'utf-8', valueEncoding: 'json' }
+          )
+          await this.runtimeModels.ready()
+
+          // Initialize all configured providers
+          await this._initProviders()
+
           const rpcServer = this.net_r0.rpcServer
 
           rpcServer.respond('listModels', (req) =>
@@ -466,6 +601,9 @@ class WrkModel extends WrkBase {
           )
           rpcServer.respond('getModelInfo', (req) =>
             this.net_r0.handleReply('getModelInfo', req)
+          )
+          rpcServer.respond('registerModel', (req) =>
+            this.net_r0.handleReply('registerModel', req)
           )
           rpcServer.respond('loadModel', (req) =>
             this.net_r0.handleReply('loadModel', req)
@@ -483,7 +621,15 @@ class WrkModel extends WrkBase {
           this.logger.info({ rack: this.ctx.rack }, 'model worker ready')
 
           // Pre-warm models flagged with autoload
-          const autoload = (this.conf.models || []).filter((m) => m.autoload)
+          const runtimeAutoload = []
+          for await (const { value } of this.runtimeModels.createReadStream()) {
+            if (value?.autoload) runtimeAutoload.push(value)
+          }
+
+          const autoload = [
+            ...(this.conf.models || []),
+            ...runtimeAutoload
+          ].filter((m) => m.autoload)
           await async.eachLimit(autoload, 2, async (m) => {
             try {
               await this._loadModel(m.id)
