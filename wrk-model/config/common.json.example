@@ -12,7 +12,7 @@
       },
       {
         "type": "ollama",
-        "enabled": false,
+        "enabled": true,
         "endpoint": "http://localhost:11434"
       }
     ]

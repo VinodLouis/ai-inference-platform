@@ -2,7 +2,7 @@
 
 A decentralised, microservice-based AI inference platform built on [Hyperswarm RPC](https://www.npmjs.com/package/hyperswarm). Instead of relying on a central broker, services discover each other through a DHT-backed registry, making the platform naturally resilient to node failures and easy to scale horizontally.
 
-This platform focuses on text generation with **GGUF quantized LLM models** from Hugging Face, using `node-llama-cpp`.
+This platform focuses on text generation with a **two-provider runtime model**: local GGUF inference via `llama-cpp` and remote inference via `ollama`, with dynamic model registration at runtime.
 
 ---
 
@@ -68,22 +68,36 @@ This copies all `.example` files to their actual config files.
 
 ### 3 — Configure the Model Worker
 
-Edit `wrk-model/config/common.json` to define which models to load:
+Edit `wrk-model/config/common.json` to configure providers and the default autoload ***REMOVED***
 
 ```json
 {
   "debug": 0,
   "runtime": {
-    "provider": "node-llama-cpp",
-    "modelBaseDir": "./models",
-    "modelCacheDir": "./models/.cache"
+    "providers": [
+      {
+        "type": "llama-cpp",
+        "enabled": true,
+        "settings": {
+          "modelBaseDir": "./models",
+          "modelCacheDir": "./models/.cache"
+        }
+      },
+      {
+        "type": "ollama",
+        "enabled": true,
+        "endpoint": "http://localhost:11434"
+      }
+    ]
   },
   "models": [
     {
       "id": "tinyllama-1.1b",
       "name": "TinyLlama 1.1B Chat",
+      "provider": "llama-cpp",
       "type": "text-generation",
       "format": "gguf",
+      "quantization": "Q4_K_M",
       "path": "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf",
       "source": {
         "type": "huggingface",
@@ -99,12 +113,14 @@ Edit `wrk-model/config/common.json` to define which models to load:
 }
 ```
 
-**Popular GGUF models to try:**
+**Default startup ***REMOVED*****
 
-- **TinyLlama 1.1B** (~700MB Q4) – Fast, great for testing
-- **Phi-2 2.7B** (~1.6GB Q4) – Better quality, still fast
-- **Mistral 7B Instruct** (~4GB Q4) – Production-grade quality
-- **Llama-2 7B Chat** (~4GB Q4) – Meta's well-known model
+- **TinyLlama 1.1B Chat** (`llama-cpp`) – auto-downloaded and auto-loaded on `wrk-model` startup
+
+**Optional runtime models to register later:**
+
+- **Phi-2 2.7B Q4** (`llama-cpp`) – local GGUF via Hugging Face auto-download
+- **Gemma 3 1B** (`ollama`) – simple runtime registration and serving
 
 **Quantization levels** (smaller = faster, less memory):
 
@@ -129,12 +145,16 @@ cd wrk-model
 node worker.js --wtype wrk-model --env development --debug true --rack model-rack-1
 ```
 
-Watch for download progress on first run:
+Watch for download and load progress on startup:
 
 ```
 {"modelId":"tinyllama-1.1b","file":"tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"} downloading model asset
-{"modelId":"tinyllama-1.1b","provider":"node-llama-cpp"} model loaded
+{"modelId":"tinyllama-1.1b","provider":"llama-cpp"} model loaded
 ```
+
+Then, if needed, register additional runtime models (Phi-2 and Gemma):
+
+- [wrk-model/PROVIDERS.md](wrk-model/PROVIDERS.md)
 
 Copy the **RPC public key** from the logs:
 
@@ -442,17 +462,18 @@ Manages a job queue and executes inference by calling the Model Worker.
 
 ### Model Worker (`wrk-model`)
 
-Loads and manages GGUF models using `node-llama-cpp`. Handles model downloads from Hugging Face and text generation.
+Manages models across `llama-cpp` and `ollama`, including runtime registration, model loading/unloading, and inference execution.
 
 **Methods**:
 
-- `listModels()` – return all configured models
-- `runInference({ modelId, prompt, params })` – generate text
+- `listModels()` – return all configured + runtime-registered models
+- `registerModel({ id, provider, ... })` – register a model at runtime
+- `runModel({ modelId, prompt, params })` – generate text
 
 **Model loading**:
 
-- If `source.type === "huggingface"`, downloads GGUF files to `runtime.modelCacheDir` on startup (if `autoload: true`)
-- Resolves model `path` relative to the cache directory
+- If `source.type === "huggingface"`, downloads GGUF files to provider cache settings when loading/registering
+- Resolves model `path` relative to provider base/cache settings
 - Supports `HF_TOKEN` environment variable for private repos (set via `source.tokenEnv`)
 
 **Context management**: Each model maintains its own context window (`contextLength` config). Prompts exceeding this limit are truncated.
@@ -704,9 +725,9 @@ npx hp-rpc-cli \
   -t 30000
 ```
 
-### Stub mode (no real LLM)
+For adding runtime models later (Gemma 3 1B + Phi-2 2.7B), see:
 
-To test without downloading models, leave `runtime.provider` as `"stub"` in `wrk-model/config/common.json`. The Model Worker will return deterministic fake responses instead of running actual inference.
+- [wrk-model/PROVIDERS.md](wrk-model/PROVIDERS.md)
 
 ---
 
@@ -745,7 +766,7 @@ Each worker inherits from `wrk-base/worker.js`, which provides:
 
 Workers implement their own RPC method handlers. For example:
 
-- `wrk-model/workers/model.wrk.js` → `listModels`, `runInference`
+- `wrk-model/workers/model.wrk.js` → `listModels`, `registerModel`, `runModel`
 - `wrk-inference/workers/inference.wrk.js` → `createInferenceJob`, `getInferenceJob`
 - `wrk-ork/workers/inference.ork.wrk.js` → `registerRack`, `forwardInference`
 
@@ -761,16 +782,30 @@ The HTTP gateway (`app-node`) uses Fastify to expose REST endpoints that transla
 {
   "debug": 0,
   "runtime": {
-    "provider": "node-llama-cpp",
-    "modelBaseDir": "./models",
-    "modelCacheDir": "./models/.cache"
+    "providers": [
+      {
+        "type": "llama-cpp",
+        "enabled": true,
+        "settings": {
+          "modelBaseDir": "./models",
+          "modelCacheDir": "./models/.cache"
+        }
+      },
+      {
+        "type": "ollama",
+        "enabled": true,
+        "endpoint": "http://localhost:11434"
+      }
+    ]
   },
   "models": [
     {
       "id": "tinyllama-1.1b",
       "name": "TinyLlama 1.1B Chat",
+      "provider": "llama-cpp",
       "type": "text-generation",
       "format": "gguf",
+      "quantization": "Q4_K_M",
       "path": "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf",
       "source": {
         "type": "huggingface",
@@ -788,17 +823,13 @@ The HTTP gateway (`app-node`) uses Fastify to expose REST endpoints that transla
 
 **Fields:**
 
-- `runtime.provider` – `"stub"` (fake responses) or `"node-llama-cpp"` (real inference)
-- `runtime.modelBaseDir` – directory for manually placed model files
-- `runtime.modelCacheDir` – directory for auto-downloaded Hugging Face models
-- `models[].id` – unique identifier used in API requests
-- `models[].path` – filename relative to `modelCacheDir` (for HF downloads) or `modelBaseDir`
-- `models[].source.type` – `"huggingface"` enables auto-download
-- `models[].source.repo` – Hugging Face repo in `owner/repo` format
-- `models[].source.files` – list of GGUF files to download
-- `models[].source.tokenEnv` – environment variable name for HF token (optional)
+- `runtime.providers[]` – list of enabled inference providers
+- `runtime.providers[].type` – provider kind (`"llama-cpp"` or `"ollama"`)
+- `runtime.providers[].settings.modelBaseDir` – llama-cpp base directory for model files
+- `runtime.providers[].settings.modelCacheDir` – llama-cpp cache directory for Hugging Face downloads
+- `runtime.providers[].endpoint` – ollama HTTP endpoint
+- `models[]` – static startup models
 - `models[].autoload` – download and load model on worker startup
-- `models[].contextLength` – max tokens (prompt + response)
 
 ### Inference Worker (`wrk-inference/config/common.json`)
 
