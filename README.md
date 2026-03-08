@@ -494,29 +494,29 @@ All log events for a single request share the same `traceId`, enabling you to re
 
 #### HTTP Gateway Events (`app-node`)
 
-| Event Type | Description | When Logged |
-|------------|-------------|-------------|
-| `REQUEST_RECEIVED` | HTTP request started | Before route handler executes |
-| `REQUEST_COMPLETED` | HTTP request finished | After response is sent |
-| `AUTH_SIGNUP_SUCCESS` | User registration succeeded | After user created in DB |
-| `AUTH_SIGNUP_FAILURE` | User registration failed | On validation or DB error |
-| `AUTH_LOGIN_SUCCESS` | User login succeeded | After token generation |
-| `AUTH_LOGIN_FAILURE` | User login failed | On invalid credentials |
-| `AUTH_INVALID_TOKEN` | Token verification failed | On protected route access with bad token |
-| `RPC_CALL_SUCCESS` | Orchestrator RPC call succeeded | After successful RPC response |
-| `RPC_CALL_ERROR` | Orchestrator RPC call failed | On RPC timeout or error |
-| `REQUEST_VALIDATION_ERROR` | Request body validation failed | On schema mismatch |
-| `INTERNAL_ERROR` | Unexpected server error | On uncaught exceptions |
+| Event Type                 | Description                     | When Logged                              |
+| -------------------------- | ------------------------------- | ---------------------------------------- |
+| `REQUEST_RECEIVED`         | HTTP request started            | Before route handler executes            |
+| `REQUEST_COMPLETED`        | HTTP request finished           | After response is sent                   |
+| `AUTH_SIGNUP_SUCCESS`      | User registration succeeded     | After user created in DB                 |
+| `AUTH_SIGNUP_FAILURE`      | User registration failed        | On validation or DB error                |
+| `AUTH_LOGIN_SUCCESS`       | User login succeeded            | After token generation                   |
+| `AUTH_LOGIN_FAILURE`       | User login failed               | On invalid credentials                   |
+| `AUTH_INVALID_TOKEN`       | Token verification failed       | On protected route access with bad token |
+| `RPC_CALL_SUCCESS`         | Orchestrator RPC call succeeded | After successful RPC response            |
+| `RPC_CALL_ERROR`           | Orchestrator RPC call failed    | On RPC timeout or error                  |
+| `REQUEST_VALIDATION_ERROR` | Request body validation failed  | On schema mismatch                       |
+| `INTERNAL_ERROR`           | Unexpected server error         | On uncaught exceptions                   |
 
 #### Orchestrator Events (`wrk-ork`)
 
-| Event Type | Description | When Logged |
-|------------|-------------|-------------|
-| `RACK_REGISTERED` | New rack joined the registry | On `registerRack` RPC call |
-| `RACK_HEARTBEAT_RECEIVED` | Rack sent heartbeat | On `heartbeatRack` RPC call |
-| `RACK_FAILURE_MARKED` | Rack marked as failed | On explicit failure signal or lease expiry |
-| `RACK_ROUTE_SELECTED` | Rack chosen for request | During routing decision |
-| `NO_RACKS_AVAILABLE` | No healthy racks found | When routing fails due to empty registry |
+| Event Type                | Description                  | When Logged                                |
+| ------------------------- | ---------------------------- | ------------------------------------------ |
+| `RACK_REGISTERED`         | New rack joined the registry | On `registerRack` RPC call                 |
+| `RACK_HEARTBEAT_RECEIVED` | Rack sent heartbeat          | On `heartbeatRack` RPC call                |
+| `RACK_FAILURE_MARKED`     | Rack marked as failed        | On explicit failure signal or lease expiry |
+| `RACK_ROUTE_SELECTED`     | Rack chosen for request      | During routing decision                    |
+| `NO_RACKS_AVAILABLE`      | No healthy racks found       | When routing fails due to empty registry   |
 
 ### Log Format
 
@@ -553,25 +553,62 @@ Here's a full trace of a single inference request flowing through the platform:
 #### 1. HTTP Gateway receives request
 
 ```json
-{"timestamp":"2026-03-08T14:32:15.123Z","level":"info","service":"app-node","traceId":"a7b3c9d1e5f2","event":"REQUEST_RECEIVED","method":"POST","url":"/inference","userId":"user@example.com","ip":"127.0.0.1"}
+{
+  "timestamp": "2026-03-08T14:32:15.123Z",
+  "level": "info",
+  "service": "app-node",
+  "traceId": "a7b3c9d1e5f2",
+  "event": "REQUEST_RECEIVED",
+  "method": "POST",
+  "url": "/inference",
+  "userId": "user@example.com",
+  "ip": "127.0.0.1"
+}
 ```
 
 #### 2. Orchestrator selects rack
 
 ```json
-{"timestamp":"2026-03-08T14:32:15.145Z","level":"info","service":"wrk-ork","traceId":"a7b3c9d1e5f2","event":"RACK_ROUTE_SELECTED","rackId":"inference-rack-1","tier":"premium","dedicated":true,"routingStrategy":"round-robin"}
+{
+  "timestamp": "2026-03-08T14:32:15.145Z",
+  "level": "info",
+  "service": "wrk-ork",
+  "traceId": "a7b3c9d1e5f2",
+  "event": "RACK_ROUTE_SELECTED",
+  "rackId": "inference-rack-1",
+  "tier": "premium",
+  "dedicated": true,
+  "routingStrategy": "round-robin"
+}
 ```
 
 #### 3. Gateway calls orchestrator successfully
 
 ```json
-{"timestamp":"2026-03-08T14:32:15.234Z","level":"info","service":"app-node","traceId":"a7b3c9d1e5f2","event":"RPC_CALL_SUCCESS","method":"forwardInference","rackId":"inference-rack-1","latencyMs":89}
+{
+  "timestamp": "2026-03-08T14:32:15.234Z",
+  "level": "info",
+  "service": "app-node",
+  "traceId": "a7b3c9d1e5f2",
+  "event": "RPC_CALL_SUCCESS",
+  "method": "forwardInference",
+  "rackId": "inference-rack-1",
+  "latencyMs": 89
+}
 ```
 
 #### 4. Gateway completes request
 
 ```json
-{"timestamp":"2026-03-08T14:32:15.256Z","level":"info","service":"app-node","traceId":"a7b3c9d1e5f2","event":"REQUEST_COMPLETED","statusCode":200,"latencyMs":133}
+{
+  "timestamp": "2026-03-08T14:32:15.256Z",
+  "level": "info",
+  "service": "app-node",
+  "traceId": "a7b3c9d1e5f2",
+  "event": "REQUEST_COMPLETED",
+  "statusCode": 200,
+  "latencyMs": 133
+}
 ```
 
 All four events share the same `traceId: "a7b3c9d1e5f2"`, making it trivial to reconstruct the full request flow.
@@ -594,11 +631,13 @@ grep '"traceId"' app-node.log | jq -r .traceId | sort | uniq -c | sort -rn
 For production systems, use your log aggregation platform's query language:
 
 **Loki (LogQL):**
+
 ```logql
 {service="app-node"} | json | traceId="a7b3c9d1e5f2"
 ```
 
 **Elasticsearch:**
+
 ```json
 {
   "query": {
@@ -608,6 +647,7 @@ For production systems, use your log aggregation platform's query language:
 ```
 
 **CloudWatch Logs Insights:**
+
 ```
 fields @timestamp, event, statusCode
 | filter traceId = "a7b3c9d1e5f2"
