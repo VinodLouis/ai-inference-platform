@@ -156,7 +156,7 @@ Then, if needed, register additional runtime models (Phi-2 and Gemma):
 
 - [wrk-model/PROVIDERS.md](wrk-model/PROVIDERS.md)
 
-Copy the **RPC public key** from the logs:
+Copy the **RPC public key** from either the terminal logs or the status file (`wrk-model/status/wrk-model-model-rack-1.json`):
 
 ```
 {"rpcPublicKey":"<MODEL_RPC_KEY>", ...}
@@ -180,7 +180,7 @@ cd wrk-inference
 node worker.js --wtype wrk-inference --env development --debug true --rack inference-rack-1
 ```
 
-Note its `rpcPublicKey` from the logs.
+Note its `rpcPublicKey` from either the terminal logs or the status file (`wrk-inference/status/wrk-inference-inference-rack-1.json`).
 
 ### 7 — Start the Orchestrator
 
@@ -189,7 +189,7 @@ cd wrk-ork
 node worker.js --wtype wrk-ork-inference --env development --cluster 1
 ```
 
-Grab the orchestrator's `rpcPublicKey` from the logs.
+Grab the orchestrator's `rpcPublicKey` from either the terminal logs or the status file (`wrk-ork/status/wrk-ork-inference-1.json`).
 
 ### 8 — Register workers with the Orchestrator
 
@@ -233,6 +233,23 @@ Edit `app-node/config/common.json`:
 ```
 
 **Important:** Replace the auth secrets with strong random strings in production. The `signupSecret` gates who can register users; `tokenSecret` signs authentication tokens.
+
+**Recommended values:**
+
+- `signupSecret`: random secret for controlling who can call `/auth/signup` (minimum 32 random bytes = 64 hex chars)
+- `tokenSecret`: different random secret used to sign access tokens (minimum 32 random bytes, recommended 64 random bytes = 128 hex chars)
+
+Generate both with OpenSSL:
+
+```sh
+# signupSecret (32 bytes)
+openssl rand -hex 32
+
+# tokenSecret (64 bytes)
+openssl rand -hex 64
+```
+
+Best practice: keep these secrets in environment variables or a secret manager, use different values per environment, and avoid committing real secrets to git.
 
 Start the gateway:
 
