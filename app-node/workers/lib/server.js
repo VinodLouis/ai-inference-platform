@@ -144,6 +144,8 @@ async function postInference (ctx, req) {
   const requestBody = {
     ...req.body,
     traceId,
+    userEmail: req.user?.email,
+    userRoles: req.user?.roles || [],
     routing: {
       tier: isPremium ? 'premium' : 'standard',
       allowSharedFallback: true
@@ -205,7 +207,7 @@ async function getInferenceStatus (ctx, req) {
   const result = await requestOrchestrator(
     ctx,
     'getJobStatus',
-    { jobId: req.params.jobId, rackId },
+    { jobId: req.params.jobId, rackId, userEmail: req.user?.email },
     { timeout: 15000 }
   )
 
@@ -258,7 +260,7 @@ async function cancelJob (ctx, req) {
   const result = await requestOrchestrator(
     ctx,
     'cancelJob',
-    { jobId: req.params.jobId, rackId },
+    { jobId: req.params.jobId, rackId, userEmail: req.user?.email },
     { timeout: 15000 }
   )
 
@@ -297,7 +299,8 @@ async function listJobs (ctx, req) {
     {
       rackId: req.query.rackId,
       status: req.query.status,
-      limit: req.query.limit ? Number(req.query.limit) : undefined
+      limit: req.query.limit ? Number(req.query.limit) : undefined,
+      userEmail: req.user?.email
     },
     { timeout: 15000 }
   )

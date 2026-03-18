@@ -334,7 +334,7 @@ class WrkOrkInference extends WrkOrkBase {
       const status = await this.net_r0.jRequest(
         rack.info.rpcPublicKey,
         'getJobStatus',
-        { jobId: req.jobId },
+        { jobId: req.jobId, userEmail: req.userEmail },
         { timeout: 10000 }
       )
 
@@ -400,7 +400,7 @@ class WrkOrkInference extends WrkOrkBase {
       const result = await this.net_r0.jRequest(
         rack.info.rpcPublicKey,
         'cancelJob',
-        { jobId: req.jobId },
+        { jobId: req.jobId, userEmail: req.userEmail },
         { timeout: 10000 }
       )
 
@@ -461,7 +461,7 @@ class WrkOrkInference extends WrkOrkBase {
       const jobs = await this.net_r0.jRequest(
         rack.info.rpcPublicKey,
         'listJobs',
-        { status: req.status, limit: req.limit },
+        { status: req.status, limit: req.limit, userEmail: req.userEmail },
         { timeout: 10000 }
       )
 

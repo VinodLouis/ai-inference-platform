@@ -1,0 +1,61 @@
+:root {
+  color: #10243e;
+}
+
+body {
+  margin: 0;
+  background:
+    radial-gradient(circle at 10% 10%, #d7ecff 0, #d7ecff 18%, transparent 19%),
+    radial-gradient(circle at 90% 90%, #dff4e5 0, #dff4e5 15%, transparent 16%),
+    linear-gradient(135deg, #f8fbff 0%, #edf4ff 100%);
+}
+
+.app-shell {
+  min-height: 100vh;
+}
+
+.app-header {
+  background: linear-gradient(90deg, #0f3566, #1b5da1);
+  border-bottom: 1px solid rgba(255, 255, 255, 0.15);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+
+.header-inner {
+  max-width: 1180px;
+  margin: 0 auto;
+  display: flex;
+  height: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.header-title {
+  margin: 0 !important;
+  color: #f7fbff !important;
+}
+
+.content-wrap {
+  max-width: 1400px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 24px;
+}
+
+.panel-card {
+  box-shadow: 0 12px 28px rgba(16, 36, 62, 0.08);
+  border-radius: 14px;
+}
+
+.result-box {
+  background: #0e1a2f;
+  color: #def0ff;
+  border-radius: 10px;
+  padding: 10px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 220px;
+  overflow: auto;
+}

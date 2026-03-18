@@ -61,6 +61,8 @@ class WrkInference extends WrkBase {
       id: crypto.randomUUID(),
       modelId: req.modelId,
       prompt: req.prompt,
+      userEmail: req.userEmail || null,
+      userRoles: req.userRoles || [],
       params: req.params || {},
       status: 'queued', // queued | running | completed | failed | cancelled
       result: null,
@@ -244,6 +246,9 @@ class WrkInference extends WrkBase {
     const job = jobs[req.jobId] || (await this.jobs.get(req.jobId))?.value
 
     if (!job) throw new Error('ERR_JOB_NOT_FOUND')
+    if (req.userEmail && req.userEmail !== job.userEmail) {
+      throw new Error('ERR_JOB_FORBIDDEN')
+    }
 
     return job
   }
@@ -258,9 +263,12 @@ class WrkInference extends WrkBase {
     if (!req.jobId) throw new Error('ERR_JOB_ID_REQUIRED')
 
     const jobs = this._ensureJobsMem()
-    const job = jobs[req.jobId]
+    const job = jobs[req.jobId] || (await this.jobs.get(req.jobId))?.value
 
     if (!job) return 0
+    if (req.userEmail && req.userEmail !== job.userEmail) {
+      throw new Error('ERR_JOB_FORBIDDEN')
+    }
     if (job.status !== 'running' && job.status !== 'queued') return 0
 
     job.status = 'cancelled'
@@ -282,7 +290,10 @@ class WrkInference extends WrkBase {
 
     for await (const data of stream) {
       const job = data.value
-      if (!req.status || job.status === req.status) {
+      const userMatches = !req.userEmail || job.userEmail === req.userEmail
+      const statusMatches = !req.status || job.status === req.status
+
+      if (userMatches && statusMatches) {
         res.push(job)
       }
     }
