@@ -4,7 +4,8 @@
     "signupSecret": "CHANGE_ME_SIGNUP_SECRET",
     "tokenSecret": "CHANGE_ME_TOKEN_SECRET",
     "tokenTtlSeconds": 86400,
-    "protectedRoutes": true
+    "protectedRoutes": true,
+    "sharedStoreDir": ""
   },
   "orks": {
     "cluster-1": {

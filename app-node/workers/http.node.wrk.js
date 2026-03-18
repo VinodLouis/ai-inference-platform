@@ -71,6 +71,20 @@ class WrkNodeHttp extends WrkBase {
       cb
     )
   }
+
+  _stop (cb) {
+    async.series(
+      [
+        async () => {
+          await auth.closeAuthStore(this)
+        },
+        (next) => {
+          super._stop(next)
+        }
+      ],
+      cb
+    )
+  }
 }
 
 module.exports = WrkNodeHttp

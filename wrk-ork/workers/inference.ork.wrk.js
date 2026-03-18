@@ -51,6 +51,30 @@ class WrkOrkInference extends WrkOrkBase {
     return ordered
   }
 
+  async _rememberJobOwnership ({ jobId, rackId, modelId }) {
+    if (!jobId || !rackId || !this.jobOwnership) return
+
+    await this.jobOwnership.put(jobId, {
+      jobId,
+      rackId,
+      modelId,
+      createdAt: Date.now()
+    })
+  }
+
+  async _resolveRackForJob (req) {
+    if (req.rackId) {
+      return req.rackId
+    }
+
+    if (!this.jobOwnership) {
+      return null
+    }
+
+    const row = await this.jobOwnership.get(req.jobId)
+    return row?.value?.rackId || null
+  }
+
   async _pickRack (modelId, routing = {}) {
     const racks = await this.listRacks({ type: 'inference', keys: true })
 
@@ -176,6 +200,12 @@ class WrkOrkInference extends WrkOrkBase {
             modelId: req.modelId
           })
 
+          await this._rememberJobOwnership({
+            jobId: result.jobId,
+            rackId: rack.id,
+            modelId: req.modelId
+          })
+
           return { ...result, rackId: rack.id }
         } catch (err) {
           lastError = err
@@ -283,14 +313,16 @@ class WrkOrkInference extends WrkOrkBase {
 
     try {
       if (!req.jobId) throw new Error('ERR_JOB_ID_REQUIRED')
-      if (!req.rackId) throw new Error('ERR_RACK_ID_REQUIRED')
+
+      const resolvedRackId = await this._resolveRackForJob(req)
+      if (!resolvedRackId) throw new Error('ERR_RACK_ID_REQUIRED')
 
       const racks = await this.listRacks({
         type: 'inference',
         keys: true,
         liveOnly: false
       })
-      const rack = racks.find((r) => r.id === req.rackId)
+      const rack = racks.find((r) => r.id === resolvedRackId)
 
       if (!rack) throw new Error('ERR_RACK_NOT_FOUND')
 
@@ -313,11 +345,14 @@ class WrkOrkInference extends WrkOrkBase {
 
       this.audit.logResponse(this.logger, traceId, 'getJobStatus', {
         jobId: req.jobId,
-        rackId: req.rackId,
+        rackId: resolvedRackId,
         status: status.status
       })
 
-      return status
+      return {
+        ...status,
+        rackId: resolvedRackId
+      }
     } catch (err) {
       // Audit: Status query failed
       this.audit.logError(this.logger, traceId, 'getJobStatus', err, {
@@ -345,14 +380,16 @@ class WrkOrkInference extends WrkOrkBase {
 
     try {
       if (!req.jobId) throw new Error('ERR_JOB_ID_REQUIRED')
-      if (!req.rackId) throw new Error('ERR_RACK_ID_REQUIRED')
+
+      const resolvedRackId = await this._resolveRackForJob(req)
+      if (!resolvedRackId) throw new Error('ERR_RACK_ID_REQUIRED')
 
       const racks = await this.listRacks({
         type: 'inference',
         keys: true,
         liveOnly: false
       })
-      const rack = racks.find((r) => r.id === req.rackId)
+      const rack = racks.find((r) => r.id === resolvedRackId)
 
       if (!rack) throw new Error('ERR_RACK_NOT_FOUND')
 
@@ -373,11 +410,11 @@ class WrkOrkInference extends WrkOrkBase {
 
       this.audit.logResponse(this.logger, traceId, 'cancelJob', {
         jobId: req.jobId,
-        rackId: req.rackId,
+        rackId: resolvedRackId,
         cancelled: result
       })
 
-      return { cancelled: result }
+      return { cancelled: result, rackId: resolvedRackId }
     } catch (err) {
       this.audit.logError(this.logger, traceId, 'cancelJob', err, {
         jobId: req.jobId,
@@ -454,6 +491,12 @@ class WrkOrkInference extends WrkOrkBase {
         },
         async () => {
           const rpcServer = this.net_r0.rpcServer
+
+          this.jobOwnership = await this.store_s0.getBee(
+            { name: 'job-ownership' },
+            { keyEncoding: 'utf-8', valueEncoding: 'json' }
+          )
+          await this.jobOwnership.ready()
 
           rpcServer.respond('routeInference', (req) =>
             this.net_r0.handleReply('routeInference', req)

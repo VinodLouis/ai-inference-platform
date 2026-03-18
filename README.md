@@ -258,6 +258,8 @@ All endpoints run on the `app-node` HTTP gateway (default port 3000).
 
 - `POST /inference` – Submit a text generation job
 - `GET /inference/:jobId` – Check job status and retrieve results
+- `DELETE /inference/:jobId` – Cancel a queued/running job
+- `GET /inference` – List jobs for a specific rack (`rackId` query required)
 - `GET /models` – List available models
 - `GET /racks` – List registered service racks
 
@@ -352,8 +354,12 @@ curl -X POST http://localhost:3000/inference \
 
 ```sh
 curl -H "Authorization: Bearer $TOKEN" \
-  "http://localhost:3000/inference/<jobId>?rackId=inference-rack-1"
+  "http://localhost:3000/inference/<jobId>"
 ```
+
+`rackId` is optional for this endpoint. If supplied, it is used directly.
+If omitted, the orchestrator resolves job ownership using its `job-ownership`
+Hyperbee index (`jobId -> rackId`).
 
 **While running:**
 
@@ -431,9 +437,10 @@ Exposes REST endpoints. The `/inference` route forwards requests to the orchestr
 - `auth.tokenSecret` – used to sign and verify JWT-like tokens
 - `auth.tokenTtlSeconds` – token expiration (default 86400 = 24 hours)
 - `auth.protectedRoutes` – enable/disable auth enforcement
+- `auth.sharedStoreDir` – shared filesystem path for the user database (for multi-gateway deployments)
 - `orks` – list of orchestrator RPC keys to connect to
 
-**Storage**: Uses Hyperbee to persist user accounts across restarts.
+**Storage**: Uses Hyperbee to persist user accounts across restarts. When `auth.sharedStoreDir` is set, all gateway instances share one user database on a network filesystem; otherwise each instance uses its own local store.
 
 ### Orchestrator (`wrk-ork`)
 
@@ -480,173 +487,350 @@ Manages models across `llama-cpp` and `ollama`, including runtime registration, 
 
 ---
 
+## Data Sharding & Storage Isolation
+
+Every service instance maintains its own **isolated Hyperbee store**, scoped by the `--rack` (or instance) name. There is no shared database — data is partitioned at the process level.
+
+### Goals
+
+- Keep hot-path data local to each worker rack.
+- Avoid a global shared write store for all service data.
+- Provide fast lookup for job status/cancel by `jobId`.
+
+### Request Routing
+
+#### Submit Job
+
+1. Client calls `POST /inference`.
+2. Gateway sends `routeInference` to orchestrator.
+3. Orchestrator picks an inference rack (tier-aware round-robin).
+4. Selected inference rack creates the job and returns `jobId`.
+5. Orchestrator stores ownership in `job-ownership`.
+
+#### Get Status / Cancel
+
+1. Client calls `GET /inference/:jobId` or `DELETE /inference/:jobId`.
+2. If `rackId` is provided, orchestrator uses it directly.
+3. If `rackId` is omitted, orchestrator resolves `rackId` from `job-ownership`.
+4. Orchestrator forwards request to the owning inference rack.
+
+### Why This Is Better Than One Shared Store
+
+- Preserves per-rack isolation and horizontal scale.
+- Avoids high lock contention and broad failure blast radius from one shared data path.
+- Keeps only a small global index in orchestrator.
+
+### Per-Rack Store Layout
+
+When a worker starts with `--rack inference-rack-1`, its Hyperbee data lives under `store/inference-rack-1/`. Multiple instances of the same service type each get their own directory:
+
+```
+wrk-inference/
+  store/
+    inference-rack-1/    ← Instance 1's jobs
+      CORESTORE
+      db/
+    inference-rack-2/    ← Instance 2's jobs
+      CORESTORE
+      db/
+    inference-rack-3/    ← Instance 3's jobs
+      CORESTORE
+      db/
+```
+
+### What Each Service Stores
+
+| Service         | Hyperbee Name    | Data                               | Sharding Key             |
+| --------------- | ---------------- | ---------------------------------- | ------------------------ |
+| `wrk-ork`       | `racks`          | Rack registry (all rack entries)   | Per orchestrator cluster |
+| `wrk-ork`       | `job-ownership`  | Job owner index (`jobId → rackId`) | Per orchestrator cluster |
+| `wrk-inference` | `jobs`           | Job records for this rack only     | Per inference rack       |
+| `wrk-model`     | `runtime-models` | Runtime-registered models          | Per model rack           |
+| `app-node`      | `users`          | User accounts (email → record)     | Shared (configurable)    |
+
+### How This Achieves Sharding
+
+1. **Job data is partitioned by inference rack.** When you run three inference workers (`inference-rack-1`, `inference-rack-2`, `inference-rack-3`), each one stores only the jobs it processed.
+
+2. **The orchestrator maintains global routing indexes.**
+
+- `racks` maps rack IDs to RPC keys.
+- `job-ownership` maps `jobId` to owning `rackId`.
+  This enables status/cancel lookups by `jobId` without scanning all inference racks.
+
+3. **User data can be shared across gateways.** By setting `auth.sharedStoreDir` in `app-node/config/common.json` (or the `APP_AUTH_SHARED_STORE_DIR` env var) to a path on a network filesystem (NFS, EFS, shared Docker volume), all gateway instances share a single `users` Hyperbee. Users sign up once and can authenticate through any gateway. When `sharedStoreDir` is not set, the default behaviour is unchanged — each gateway keeps its own local user store.
+
+4. **Model registrations are per-model-rack.** Runtime-registered models live in the specific `wrk-model` instance that received the registration. The orchestrator aggregates model lists by querying all model racks at request time.
+
+### Implications
+
+- **Horizontal scaling** adds capacity without data migration: spin up `inference-rack-4` and register it with the orchestrator. It starts with an empty job store.
+- **Fast job lookup path**: `GET /inference/:jobId` and `DELETE /inference/:jobId` can resolve ownership by `jobId` through the orchestrator index (optional `rackId` still supported).
+- **No full cross-rack job listing**: listing all jobs across all racks still requires querying each rack individually (the orchestrator proxies `listJobs` to a specific rack).
+- **Rack removal is clean**: deregistering a rack (`forgetRacks`) removes it from routing. Its local store can be archived or deleted independently.
+- **No replication built-in**: Hyperbee stores are single-node. For durability, back up the `store/` directories.
+
+### Operational Notes
+
+- `GET /inference` (list jobs) remains rack-scoped and requires explicit `rackId`.
+- Back up `store/` directories periodically; Hyperbee does not provide automatic multi-node replication by default.
+
+### Shared Auth Store
+
+By default, each `app-node` gateway instance keeps its own user database. When running multiple gateways behind a load balancer, this means users registered on gateway A are unknown to gateway B.
+
+To solve this, point all gateways at the same directory on a shared filesystem:
+
+**Option 1 — Config file** (`app-node/config/common.json`):
+
+```json
+{
+  "auth": {
+    "sharedStoreDir": "/mnt/shared/auth-store"
+  }
+}
+```
+
+**Option 2 — Environment variable:**
+
+```sh
+export APP_AUTH_SHARED_STORE_DIR=/mnt/shared/auth-store
+```
+
+When set, the gateway opens a **dedicated Corestore + Hyperbee** at that path instead of using its per-instance store. All gateways read and write to the same Hyperbee, giving strong consistency with no replication lag.
+
+**Requirements:**
+
+- The shared path must be accessible from every gateway instance (NFS mount, AWS EFS, GlusterFS, or a Docker named volume on the same host).
+- Hyperbee uses file-level locking, so the filesystem must support POSIX `flock()` semantics. NFS v4 and EFS both support this.
+- For single-host multi-process deployments, a local directory works fine.
+
+**Example: Docker Compose with a shared volume:**
+
+```yaml
+services:
+  gateway-1:
+  ***REMOVED*** ai-inference-gateway
+    volumes:
+      - auth-store:/data/auth-store
+    environment:
+      APP_AUTH_SHARED_STORE_DIR: /data/auth-store
+    ports:
+      - "3001:3000"
+
+  gateway-2:
+  ***REMOVED*** ai-inference-gateway
+    volumes:
+      - auth-store:/data/auth-store
+    environment:
+      APP_AUTH_SHARED_STORE_DIR: /data/auth-store
+    ports:
+      - "3002:3000"
+
+volumes:
+  auth-store:
+```
+
+When `sharedStoreDir` is empty or omitted, the gateway uses its local per-instance store (the original behaviour).
+
+---
+
 ## Audit Logging & Tracing
 
-All services emit structured audit logs in **NDJSON** (newline-delimited JSON) format to `stdout`. Each log event carries a `traceId` that propagates across service boundaries, making it easy to correlate events from a single user request as it flows through the platform.
+All services emit structured audit logs in **NDJSON** (newline-delimited JSON) format to `stdout` via [Pino](https://github.com/pinojs/pino). Each log event carries a `traceId` (UUID v4) that propagates across service boundaries, making it possible to correlate events from a single user request as it flows through the platform.
 
 ### Architecture
 
-Audit logging is implemented at two layers:
+Audit logging is implemented via a shared module ([wrk-base/lib/audit.js](wrk-base/lib/audit.js)) that is attached to every worker through the base class. All four service layers emit audit events:
 
-1. **HTTP Gateway (`app-node`)** – Logs all HTTP requests, RPC calls, authentication events, and errors
-2. **Orchestrator (`wrk-ork`)** – Logs rack registration, heartbeats, failures, and routing decisions
+1. **HTTP Gateway (`app-node`)** – Logs HTTP requests, RPC calls to the orchestrator, and concurrency-limit rejections
+2. **Orchestrator (`wrk-ork`)** – Logs rack registration, rack listing, rack removal, and inference routing decisions
+3. **Inference Worker (`wrk-inference`)** – Logs job lifecycle (queued → running → completed/failed), RPC calls to Model Worker
+4. **Model Worker (`wrk-model`)** – Logs model inference execution and errors
+
+Every worker also logs a `LIFECYCLE` event at startup (emitted from `wrk-base`).
 
 Each service writes logs to `stdout` in NDJSON format. In production, redirect these to a log aggregation system (Loki, Elasticsearch, CloudWatch, etc.) for centralized querying.
 
 **Trace ID propagation flow:**
 
 ```
-HTTP Request → Gateway generates traceId
+HTTP Request → Gateway generates traceId (UUID v4)
               ↓
-         Gateway logs REQUEST_RECEIVED
+         Gateway logs REQUEST for "POST /inference"
               ↓
-         Gateway calls Orchestrator RPC (includes traceId)
+         Gateway logs RPC_CALL to orchestrator
               ↓
-         Orchestrator logs RACK_ROUTE_SELECTED (inherits traceId)
+         Gateway sends { ...body, traceId } to orchestrator via RPC
               ↓
-         Gateway logs RPC_CALL_SUCCESS or RPC_CALL_ERROR
+         Orchestrator logs REQUEST for "routeInference"
               ↓
-         Gateway logs REQUEST_COMPLETED
+         Orchestrator logs RPC_CALL to inference worker
+              ↓
+         Inference Worker inherits traceId via getOrCreateTraceId(req)
+              ↓
+         Inference Worker logs JOB_STATUS changes
+              ↓
+         Inference Worker logs RPC_CALL / RPC_RESPONSE to Model Worker
+              ↓
+         Model Worker inherits traceId via getOrCreateTraceId(req)
+              ↓
+         Model Worker logs REQUEST / RESPONSE / ERROR for "runModel"
 ```
 
-All log events for a single request share the same `traceId`, enabling you to reconstruct the full request path using a simple grep or log query.
+All log events for a single request share the same `traceId`, enabling you to reconstruct the full request path.
 
 ### Event Types
 
-#### HTTP Gateway Events (`app-node`)
+The audit module defines the following event types (used in the `eventType` field of every log entry):
 
-| Event Type                 | Description                     | When Logged                              |
-| -------------------------- | ------------------------------- | ---------------------------------------- |
-| `REQUEST_RECEIVED`         | HTTP request started            | Before route handler executes            |
-| `REQUEST_COMPLETED`        | HTTP request finished           | After response is sent                   |
-| `AUTH_SIGNUP_SUCCESS`      | User registration succeeded     | After user created in DB                 |
-| `AUTH_SIGNUP_FAILURE`      | User registration failed        | On validation or DB error                |
-| `AUTH_LOGIN_SUCCESS`       | User login succeeded            | After token generation                   |
-| `AUTH_LOGIN_FAILURE`       | User login failed               | On invalid credentials                   |
-| `AUTH_INVALID_TOKEN`       | Token verification failed       | On protected route access with bad token |
-| `RPC_CALL_SUCCESS`         | Orchestrator RPC call succeeded | After successful RPC response            |
-| `RPC_CALL_ERROR`           | Orchestrator RPC call failed    | On RPC timeout or error                  |
-| `REQUEST_VALIDATION_ERROR` | Request body validation failed  | On schema mismatch                       |
-| `INTERNAL_ERROR`           | Unexpected server error         | On uncaught exceptions                   |
-
-#### Orchestrator Events (`wrk-ork`)
-
-| Event Type                | Description                  | When Logged                                |
-| ------------------------- | ---------------------------- | ------------------------------------------ |
-| `RACK_REGISTERED`         | New rack joined the registry | On `registerRack` RPC call                 |
-| `RACK_HEARTBEAT_RECEIVED` | Rack sent heartbeat          | On `heartbeatRack` RPC call                |
-| `RACK_FAILURE_MARKED`     | Rack marked as failed        | On explicit failure signal or lease expiry |
-| `RACK_ROUTE_SELECTED`     | Rack chosen for request      | During routing decision                    |
-| `NO_RACKS_AVAILABLE`      | No healthy racks found       | When routing fails due to empty registry   |
+| Event Type     | Description                            | Where Used                                              |
+| -------------- | -------------------------------------- | ------------------------------------------------------- |
+| `REQUEST`      | Incoming request received              | All services – entry point of each RPC method / route   |
+| `RESPONSE`     | Outgoing response sent                 | All services – after processing completes               |
+| `ERROR`        | Error condition                        | All services – on failures or exceptions                |
+| `LIFECYCLE`    | Service start/stop/ready               | `wrk-base` – emitted once when any worker starts        |
+| `RPC_CALL`     | Outgoing RPC call to another service   | Gateway → Ork, Ork → Inference, Inference → Model       |
+| `RPC_RESPONSE` | Response received from another service | Ork ← Inference, Inference ← Model                      |
+| `DATA_ACCESS`  | Database/store read or write           | Available but not currently called in application code  |
+| `AUTH`         | Authentication/authorization event     | Available but not currently called in application code  |
+| `JOB_STATUS`   | Job state change                       | `wrk-inference` – on queued, running, completed, failed |
 
 ### Log Format
 
-All logs follow this structure:
+Logs are output by Pino in NDJSON format. Each audit event is a JSON object at the `info` (or `error`) level with an `audit: true` marker field:
 
 ```json
 {
+  "level": 30,
+  "time": 1741444335123,
+  "pid": 42561,
+  "hostname": "node-1",
+  "name": "wrk:wrk-node-http:42561",
+  "audit": true,
+  "eventType": "REQUEST",
   "timestamp": "2026-03-08T14:32:15.123Z",
-  "level": "info",
-  "service": "app-node",
-  "traceId": "a7b3c9d1e5f2",
-  "event": "REQUEST_RECEIVED",
-  "method": "POST",
-  "url": "/inference",
+  "traceId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+  "method": "POST /inference",
+  "modelId": "tinyllama-1.1b",
   "userId": "user@example.com",
   "ip": "127.0.0.1"
 }
 ```
 
-**Common fields:**
+**Standard fields on every audit event:**
 
-- `timestamp` – ISO 8601 timestamp (UTC)
-- `level` – `info`, `warn`, or `error`
-- `service` – service name (`app-node`, `wrk-ork`, etc.)
-- `traceId` – unique ID for request correlation (12-char hex string)
-- `event` – event type (see tables above)
+- `audit` – always `true` (marker to distinguish audit logs from general logs)
+- `eventType` – one of the event types listed above
+- `timestamp` – ISO 8601 timestamp (UTC) set by the audit module
+- `traceId` – UUID v4 for request correlation (e.g. `"f47ac10b-58cc-4372-a567-0e02b2c3d479"`)
 
-**Additional context fields** vary by event type (e.g., `method`, `url`, `statusCode`, `rackId`, `modelId`).
+**Pino envelope fields** (added automatically):
+
+- `level` – numeric log level (30 = info, 50 = error)
+- `time` – Unix epoch milliseconds
+- `pid` – process ID
+- `hostname` – machine hostname
+- `name` – logger name (format: `wrk:<wtype>:<pid>`)
+
+**Additional context fields** vary by event and service (e.g., `method`, `modelId`, `jobId`, `rackId`, `durationMs`, `error`, `stack`).
 
 ### Trace Propagation Example
 
-Here's a full trace of a single inference request flowing through the platform:
+Here is a realistic trace of a single inference request flowing through all four services. All events share the same `traceId`.
 
-#### 1. HTTP Gateway receives request
+#### 1. HTTP Gateway receives the request
 
 ```json
 {
+  "level": 30,
+  "time": 1741444335123,
+  "name": "wrk:wrk-node-http:42561",
+  "audit": true,
+  "eventType": "REQUEST",
   "timestamp": "2026-03-08T14:32:15.123Z",
-  "level": "info",
-  "service": "app-node",
-  "traceId": "a7b3c9d1e5f2",
-  "event": "REQUEST_RECEIVED",
-  "method": "POST",
-  "url": "/inference",
+  "traceId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+  "method": "POST /inference",
+  "modelId": "tinyllama-1.1b",
   "userId": "user@example.com",
   "ip": "127.0.0.1"
 }
 ```
 
-#### 2. Orchestrator selects rack
+#### 2. Gateway calls orchestrator RPC
 
 ```json
 {
-  "timestamp": "2026-03-08T14:32:15.145Z",
-  "level": "info",
-  "service": "wrk-ork",
-  "traceId": "a7b3c9d1e5f2",
-  "event": "RACK_ROUTE_SELECTED",
-  "rackId": "inference-rack-1",
-  "tier": "premium",
-  "dedicated": true,
-  "routingStrategy": "round-robin"
+  "level": 30,
+  "time": 1741444335130,
+  "name": "wrk:wrk-node-http:42561",
+  "audit": true,
+  "eventType": "RPC_CALL",
+  "timestamp": "2026-03-08T14:32:15.130Z",
+  "traceId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+  "targetService": "a1b2c3d4e5f6...",
+  "method": "routeInference",
+  "modelId": "tinyllama-1.1b"
 }
 ```
 
-#### 3. Gateway calls orchestrator successfully
+#### 3. Orchestrator logs the routing request and RPC call to inference worker
+
+```json
+{"level":30,"time":1741444335145,"name":"wrk:wrk-ork-***REMOVED***42570","audit":true,"eventType":"REQUEST","timestamp":"2026-03-08T14:32:15.145Z","traceId":"f47ac10b-58cc-4372-a567-0e02b2c3d479","method":"routeInference","modelId":"tinyllama-1.1b","hasPrompt":true}
+{"level":30,"time":1741444335150,"name":"wrk:wrk-ork-***REMOVED***42570","audit":true,"eventType":"RPC_CALL","timestamp":"2026-03-08T14:32:15.150Z","traceId":"f47ac10b-58cc-4372-a567-0e02b2c3d479","targetService":"inference-rack-1","method":"runInference","modelId":"tinyllama-1.1b"}
+```
+
+#### 4. Inference Worker logs job creation and calls Model Worker
+
+```json
+{"level":30,"time":1741444335200,"name":"wrk:wrk-***REMOVED***42580","audit":true,"eventType":"REQUEST","timestamp":"2026-03-08T14:32:15.200Z","traceId":"f47ac10b-58cc-4372-a567-0e02b2c3d479","method":"runInference","modelId":"tinyllama-1.1b","promptLength":30}
+{"level":30,"time":1741444335210,"name":"wrk:wrk-***REMOVED***42580","audit":true,"eventType":"JOB_STATUS","timestamp":"2026-03-08T14:32:15.210Z","traceId":"f47ac10b-58cc-4372-a567-0e02b2c3d479","jobId":"c3d4e5f6-...","status":"queued","modelId":"tinyllama-1.1b"}
+{"level":30,"time":1741444335220,"name":"wrk:wrk-***REMOVED***42580","audit":true,"eventType":"RPC_CALL","timestamp":"2026-03-08T14:32:15.220Z","traceId":"f47ac10b-58cc-4372-a567-0e02b2c3d479","targetService":"a9b8c7d6...","method":"runModel","jobId":"c3d4e5f6-...","modelId":"tinyllama-1.1b"}
+```
+
+#### 5. Model Worker executes inference and responds
+
+```json
+{"level":30,"time":1741444335300,"name":"wrk:wrk-***REMOVED***42590","audit":true,"eventType":"REQUEST","timestamp":"2026-03-08T14:32:15.300Z","traceId":"f47ac10b-58cc-4372-a567-0e02b2c3d479","method":"runModel","modelId":"tinyllama-1.1b"}
+{"level":30,"time":1741444337640,"name":"wrk:wrk-***REMOVED***42590","audit":true,"eventType":"RESPONSE","timestamp":"2026-03-08T14:32:17.640Z","traceId":"f47ac10b-58cc-4372-a567-0e02b2c3d479","method":"runModel","durationMs":2340,"tokens":18}
+```
+
+#### 6. Gateway completes the response
 
 ```json
 {
-  "timestamp": "2026-03-08T14:32:15.234Z",
-  "level": "info",
-  "service": "app-node",
-  "traceId": "a7b3c9d1e5f2",
-  "event": "RPC_CALL_SUCCESS",
-  "method": "forwardInference",
-  "rackId": "inference-rack-1",
-  "latencyMs": 89
+  "level": 30,
+  "time": 1741444337700,
+  "name": "wrk:wrk-node-http:42561",
+  "audit": true,
+  "eventType": "RESPONSE",
+  "timestamp": "2026-03-08T14:32:17.700Z",
+  "traceId": "f47ac10b-58cc-4372-a567-0e02b2c3d479",
+  "method": "POST /inference",
+  "durationMs": 2577,
+  "jobId": "c3d4e5f6-...",
+  "status": "queued"
 }
 ```
-
-#### 4. Gateway completes request
-
-```json
-{
-  "timestamp": "2026-03-08T14:32:15.256Z",
-  "level": "info",
-  "service": "app-node",
-  "traceId": "a7b3c9d1e5f2",
-  "event": "REQUEST_COMPLETED",
-  "statusCode": 200,
-  "latencyMs": 133
-}
-```
-
-All four events share the same `traceId: "a7b3c9d1e5f2"`, making it trivial to reconstruct the full request flow.
 
 ### Querying Logs by Trace ID
 
 Since logs are NDJSON, you can use standard Unix tools to filter by trace ID:
 
 ```sh
-# Find all events for a specific trace
-grep '"traceId":"a7b3c9d1e5f2"' app-node.log
+# Find all events for a specific trace (pipe all service logs together)
+cat app-node.log ork.log inference.log model.log \
+  | grep '"traceId":"f47ac10b-58cc-4372-a567-0e02b2c3d479"'
 
 # Pretty-print with jq
-grep '"traceId":"a7b3c9d1e5f2"' app-node.log | jq .
+grep '"traceId":"f47ac10b-58cc-4372-a567-0e02b2c3d479"' *.log | jq .
 
-# Count events per trace
-grep '"traceId"' app-node.log | jq -r .traceId | sort | uniq -c | sort -rn
+# List unique trace IDs by frequency
+grep '"traceId"' *.log | jq -r .traceId | sort | uniq -c | sort -rn
+
+# Show only audit events (ignore regular Pino log lines)
+grep '"audit":true' *.log | jq .
 ```
 
 For production systems, use your log aggregation platform's query language:
@@ -654,7 +838,7 @@ For production systems, use your log aggregation platform's query language:
 **Loki (LogQL):**
 
 ```logql
-{service="app-node"} | json | traceId="a7b3c9d1e5f2"
+{job="ai-inference"} | json | traceId="f47ac10b-58cc-4372-a567-0e02b2c3d479"
 ```
 
 **Elasticsearch:**
@@ -662,7 +846,7 @@ For production systems, use your log aggregation platform's query language:
 ```json
 {
   "query": {
-    "term": { "traceId": "a7b3c9d1e5f2" }
+    "term": { "traceId": "f47ac10b-58cc-4372-a567-0e02b2c3d479" }
   }
 }
 ```
@@ -670,29 +854,43 @@ For production systems, use your log aggregation platform's query language:
 **CloudWatch Logs Insights:**
 
 ```
-fields @timestamp, event, statusCode
-| filter traceId = "a7b3c9d1e5f2"
+fields @timestamp, eventType, method, traceId
+| filter traceId = "f47ac10b-58cc-4372-a567-0e02b2c3d479"
 | sort @timestamp asc
 ```
 
 ### Error Trace Example
 
-When errors occur, the trace includes failure context:
+When errors occur, the audit logger captures the error message and stack trace:
 
 ```json
-{"timestamp":"2026-03-08T14:45:22.123Z","level":"info","service":"app-node","traceId":"x9y8z7w6v5u4","event":"REQUEST_RECEIVED","method":"POST","url":"/inference"}
-{"timestamp":"2026-03-08T14:45:22.456Z","level":"error","service":"app-node","traceId":"x9y8z7w6v5u4","event":"RPC_CALL_ERROR","method":"forwardInference","error":"RPC_TIMEOUT","message":"No response from orchestrator after 10000ms"}
-{"timestamp":"2026-03-08T14:45:22.478Z","level":"error","service":"app-node","traceId":"x9y8z7w6v5u4","event":"REQUEST_COMPLETED","statusCode":503,"latencyMs":355}
+{"level":30,"time":1741447522123,"name":"wrk:wrk-node-http:42561","audit":true,"eventType":"REQUEST","timestamp":"2026-03-08T14:45:22.123Z","traceId":"e8a3b1c2-d4f5-6789-abcd-ef0123456789","method":"POST /inference","modelId":"tinyllama-1.1b","userId":"user@example.com","ip":"127.0.0.1"}
+{"level":30,"time":1741447522130,"name":"wrk:wrk-node-http:42561","audit":true,"eventType":"RPC_CALL","timestamp":"2026-03-08T14:45:22.130Z","traceId":"e8a3b1c2-d4f5-6789-abcd-ef0123456789","targetService":"a1b2c3d4...","method":"routeInference","modelId":"tinyllama-1.1b"}
+{"level":50,"time":1741447522456,"name":"wrk:wrk-ork-***REMOVED***42570","audit":true,"eventType":"ERROR","timestamp":"2026-03-08T14:45:22.456Z","traceId":"e8a3b1c2-d4f5-6789-abcd-ef0123456789","method":"routeInference","error":"ERR_NO_INFERENCE_WORKERS","modelId":"tinyllama-1.1b"}
 ```
 
-This shows the request failed due to an RPC timeout, and the gateway returned HTTP 503.
+This shows the request failed because no inference workers were registered with the orchestrator.
+
+### What Is and Isn't Covered
+
+The audit module ([wrk-base/lib/audit.js](wrk-base/lib/audit.js)) provides helper functions for 9 event types and is attached to every worker via `this.audit`. Currently, the following helpers are **actively called** in application code:
+
+- `generateTraceId()` / `getOrCreateTraceId(req)` – all services
+- `logRequest()` / `logResponse()` – all services
+- `logError()` – all services
+- `logRpcCall()` / `logRpcResponse()` – gateway, orchestrator, inference worker
+- `logJobStatus()` – inference worker
+- `logLifecycle()` – base worker (startup)
+- `createTimer()` – gateway, model worker
+
+The `logDataAccess()` and `logAuth()` helpers (for `DATA_ACCESS` and `AUTH` events) are defined in the module but **not yet called** in application code. They are available for future use by any worker via `this.audit.logDataAccess(...)`.
 
 ### Best Practices
 
-1. **Always include traceId in API responses** – Return the trace ID in HTTP headers or response bodies so clients can reference it when reporting issues
-2. **Set log retention policies** – NDJSON logs can grow quickly; rotate daily and archive to object storage
-3. **Index key fields** – If shipping to Elasticsearch/Loki, index `traceId`, `userId`, `event`, `statusCode` for fast queries
-4. **Monitor error rates** – Alert on spikes in `RPC_CALL_ERROR`, `AUTH_LOGIN_FAILURE`, or `INTERNAL_ERROR` events
+1. **Set log retention policies** – NDJSON logs can grow quickly; rotate daily and archive to object storage
+2. **Index key fields** – If shipping to Elasticsearch/Loki, index `traceId`, `eventType`, `method`, and `jobId` for fast queries
+3. **Filter by `audit: true`** – Use this marker to separate structured audit events from general Pino log output
+4. **Monitor error rates** – Alert on spikes in `ERROR` events, particularly for methods like `routeInference` or `runModel`
 5. **Correlate with metrics** – Combine trace logs with metrics (request rate, latency histograms) for full observability
 
 ---
@@ -853,7 +1051,8 @@ The HTTP gateway (`app-node`) uses Fastify to expose REST endpoints that transla
     "signupSecret": "dev-secret-change-in-production",
     "tokenSecret": "your-random-256-bit-secret-here",
     "tokenTtlSeconds": 86400,
-    "protectedRoutes": true
+    "protectedRoutes": true,
+    "sharedStoreDir": ""
   },
   "orks": {
     "cluster-1": {
@@ -869,12 +1068,14 @@ The HTTP gateway (`app-node`) uses Fastify to expose REST endpoints that transla
 - `auth.tokenSecret` – secret key for signing JWT-like tokens (CHANGE IN PRODUCTION!)
 - `auth.tokenTtlSeconds` – token expiration time in seconds (default 86400 = 24 hours)
 - `auth.protectedRoutes` – enable/disable auth enforcement (set `false` to disable auth globally)
+- `auth.sharedStoreDir` – path to a shared directory for the user database (NFS/EFS); when set, all gateways share a single user store. Leave empty for per-instance storage (default).
 - `orks` – map of orchestrator cluster names to their RPC public keys
 
 **Environment variable overrides:**
 
 - `APP_SIGNUP_SECRET` – overrides `auth.signupSecret`
 - `APP_TOKEN_SECRET` – overrides `auth.tokenSecret`
+- `APP_AUTH_SHARED_STORE_DIR` – overrides `auth.sharedStoreDir`
 
 ---
 

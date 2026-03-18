@@ -187,21 +187,17 @@ async function postInference (ctx, req) {
 /**
  * GET /inference/:jobId
  * Poll the status of an existing job.
- * Query params: rackId (required)
+ * Query params: rackId (optional)
  */
 async function getInferenceStatus (ctx, req) {
   const traceId = ctx.audit.generateTraceId()
 
-  if (!req.query.rackId) {
-    const err = new Error('ERR_RACK_ID_REQUIRED')
-    err.statusCode = 400
-    throw err
-  }
+  const rackId = req.query?.rackId
 
   // Audit: Log HTTP request
   ctx.audit.logRequest(ctx.logger, traceId, 'GET /inference/:jobId', {
     jobId: req.params.jobId,
-    rackId: req.query.rackId,
+    rackId,
     userId: req.user?.id,
     ip: req.ip
   })
@@ -209,7 +205,7 @@ async function getInferenceStatus (ctx, req) {
   const result = await requestOrchestrator(
     ctx,
     'getJobStatus',
-    { jobId: req.params.jobId, rackId: req.query.rackId },
+    { jobId: req.params.jobId, rackId },
     { timeout: 15000 }
   )
 
@@ -245,20 +241,16 @@ async function getRacks (ctx, req) {
 /**
  * DELETE /inference/:jobId
  * Cancel a queued or running job.
- * Query params: rackId (required)
+ * Query params: rackId (optional)
  */
 async function cancelJob (ctx, req) {
-  if (!req.query.rackId) {
-    const err = new Error('ERR_RACK_ID_REQUIRED')
-    err.statusCode = 400
-    throw err
-  }
+  const rackId = req.query?.rackId
 
   const traceId = ctx.audit.generateTraceId()
 
   ctx.audit.logRequest(ctx.logger, traceId, 'DELETE /inference/:jobId', {
     jobId: req.params.jobId,
-    rackId: req.query.rackId,
+    rackId,
     userId: req.user?.id,
     ip: req.ip
   })
@@ -266,7 +258,7 @@ async function cancelJob (ctx, req) {
   const result = await requestOrchestrator(
     ctx,
     'cancelJob',
-    { jobId: req.params.jobId, rackId: req.query.rackId },
+    { jobId: req.params.jobId, rackId },
     { timeout: 15000 }
   )
 

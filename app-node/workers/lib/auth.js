@@ -1,6 +1,8 @@
 'use strict'
 
 const crypto = require('crypto')
+const Corestore = require('corestore')
+const Hyperbee = require('hyperbee')
 
 const signupBody = {
   type: 'object',
@@ -76,13 +78,43 @@ function getAuthConfig (ctx) {
 
 async function initAuthStore (ctx) {
   if (!ctx._usersDb) {
-    ctx._usersDb = await ctx.store_s0.getBee(
-      { name: 'users' },
-      { keyEncoding: 'utf-8', valueEncoding: 'json' }
-    )
-    await ctx._usersDb.ready()
+    const sharedDir =
+      ctx.conf.auth?.sharedStoreDir || process.env.APP_AUTH_SHARED_STORE_DIR
+
+    if (sharedDir) {
+      // Shared store: open a dedicated Corestore at the shared path.
+      // All gateway instances pointing at the same directory share one
+      // Hyperbee, giving strong consistency without replication.
+      ctx._sharedAuthCorestore = new Corestore(sharedDir)
+      const core = ctx._sharedAuthCorestore.get({ name: 'users' })
+      ctx._usersDb = new Hyperbee(core, {
+        keyEncoding: 'utf-8',
+        valueEncoding: 'json'
+      })
+      await ctx._usersDb.ready()
+
+      ctx.logger.info(
+        { sharedStoreDir: sharedDir },
+        'auth store: using shared directory'
+      )
+    } else {
+      // Default: per-instance store via the worker's own store facility
+      ctx._usersDb = await ctx.store_s0.getBee(
+        { name: 'users' },
+        { keyEncoding: 'utf-8', valueEncoding: 'json' }
+      )
+      await ctx._usersDb.ready()
+    }
   }
   return ctx._usersDb
+}
+
+async function closeAuthStore (ctx) {
+  if (ctx._sharedAuthCorestore) {
+    await ctx._sharedAuthCorestore.close()
+    ctx._sharedAuthCorestore = null
+    ctx._usersDb = null
+  }
 }
 
 function getUsersStore (ctx) {
@@ -338,6 +370,7 @@ function withProtectedRoutes (ctx, routes) {
 
 module.exports = {
   authHandlers,
+  closeAuthStore,
   initAuthStore,
   loginRoute,
   requireAuth,
