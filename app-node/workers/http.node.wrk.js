@@ -40,6 +40,7 @@ class WrkNodeHttp extends WrkBase {
         'h0',
         {
           port: this.ctx.port,
+          host: '0.0.0.0',
           logger: true,
           addDefaultRoutes: true,
           trustProxy: true

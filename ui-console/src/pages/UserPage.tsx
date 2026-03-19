@@ -1,41 +1,36 @@
-import { Alert, Card, Col, Layout, Row, Space, Tag, Typography } from 'antd'
-import InferenceComposer from '../components/InferenceComposer'
-import InferenceHistoryPanel from '../components/InferenceHistoryPanel'
-import type { User } from '../types'
-import { useInferenceHistory } from '../hooks/useInferenceHistory'
-import { useModels } from '../hooks/useModels'
+import { Alert, Card, Col, Layout, Row, Space, Tag, Typography } from "antd";
+import InferenceComposer from "../components/InferenceComposer";
+import InferenceHistoryPanel from "../components/InferenceHistoryPanel";
+import type { User } from "../types";
+import { useInferenceHistory } from "../hooks/useInferenceHistory";
+import { useModels } from "../hooks/useModels";
 
-const { Content } = Layout
-const { Text } = Typography
+const { Content } = Layout;
+const { Text } = Typography;
 
 interface UserPageProps {
-  user: User | null
+  user: User | null;
 }
 
-export default function UserPage ({ user }: UserPageProps) {
-  const { models, modelsLoading, loadModels } = useModels(user?.email)
-  const {
-    history,
-    historyLoading,
-    setHistory,
-    loadHistory,
-    appendHistory
-  } = useInferenceHistory(user?.email)
+export default function UserPage({ user }: UserPageProps) {
+  const { models, modelsLoading, loadModels } = useModels(user?.email);
+  const { history, historyLoading, setHistory, loadHistory, appendHistory } =
+    useInferenceHistory(user?.email);
 
   return (
-    <Content className='content-wrap'>
+    <Content className="content-wrap">
       <Row gutter={[16, 16]}>
         <Col xs={24} lg={7}>
-          <Card title='Inference' className='panel-card'>
-            <Space direction='vertical' style={{ width: '100%' }}>
+          <Card title="Inference" className="panel-card">
+            <Space direction="vertical" style={{ width: "100%" }}>
               <Text>
-                Logged in as <Tag color='blue'>{user?.email}</Tag>
+                Logged in as <Tag color="blue">{user?.email}</Tag>
               </Text>
               <Alert
-                type='info'
+                type="info"
                 showIcon
-                message='Scoped View'
-                description='This page shows only inference jobs owned by your authenticated account from backend storage.'
+                message="Scoped View"
+                description="This page shows only inference jobs owned by your authenticated account from backend storage."
               />
               <InferenceComposer
                 models={models}
@@ -48,7 +43,7 @@ export default function UserPage ({ user }: UserPageProps) {
         </Col>
 
         <Col xs={24} lg={17}>
-          <Card title='History and Status' className='panel-card'>
+          <Card title="History and Status" className="panel-card">
             <InferenceHistoryPanel
               history={history}
               historyLoading={historyLoading}
@@ -59,5 +54,5 @@ export default function UserPage ({ user }: UserPageProps) {
         </Col>
       </Row>
     </Content>
-  )
+  );
 }

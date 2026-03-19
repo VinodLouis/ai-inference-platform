@@ -9,6 +9,38 @@ const LLMProvider = require('./llm-provider')
  * Supports high-performance CPU/GPU inference with quantized parameters.
  */
 class LlamaCppProvider extends LLMProvider {
+  static _toPositiveNumber (value, fallback) {
+    const n = Number(value)
+    return Number.isFinite(n) && n > 0 ? n : fallback
+  }
+
+  static _sleep (ms) {
+    return new Promise((resolve) => setTimeout(resolve, ms))
+  }
+
+  static async _acquireSequenceWithBackoff (context, opts = {}) {
+    const timeoutMs = this._toPositiveNumber(opts.timeoutMs, 30000)
+    const pollMs = this._toPositiveNumber(opts.pollMs, 25)
+    const startedAt = Date.now()
+
+    while ((Date.now() - startedAt) < timeoutMs) {
+      if (context.sequencesLeft > 0) {
+        try {
+          return context.getSequence()
+        } catch (err) {
+          // Another request can grab the last free sequence between the check and acquisition.
+          if (!String(err?.message || '').includes('No sequences left')) {
+            throw err
+          }
+        }
+      }
+
+      await this._sleep(pollMs)
+    }
+
+    throw new Error(`ERR_LLAMA_SEQUENCE_TIMEOUT:${timeoutMs}`)
+  }
+
   /**
    * Initialize llama-cpp provider.
    * Validates that node-llama-cpp is installed.
@@ -53,11 +85,22 @@ class LlamaCppProvider extends LLMProvider {
     const model = await llama.loadModel({ modelPath })
     const context = await model.createContext()
 
+    const sequenceAcquireTimeoutMs = this._toPositiveNumber(
+      modelMeta?.sequenceAcquireTimeoutMs ?? modelMeta?._providerSettings?.sequenceAcquireTimeoutMs,
+      30000
+    )
+    const sequenceAcquirePollMs = this._toPositiveNumber(
+      modelMeta?.sequenceAcquirePollMs ?? modelMeta?._providerSettings?.sequenceAcquirePollMs,
+      25
+    )
+
     return {
       provider: 'llama-cpp',
       modelPath,
       model,
-      context
+      context,
+      sequenceAcquireTimeoutMs,
+      sequenceAcquirePollMs
     }
   }
 
@@ -70,9 +113,13 @@ class LlamaCppProvider extends LLMProvider {
    */
   static async generate (instance, prompt, params) {
     const { LlamaChatSession } = await import('node-llama-cpp')
+    const contextSequence = await this._acquireSequenceWithBackoff(instance.context, {
+      timeoutMs: instance.sequenceAcquireTimeoutMs,
+      pollMs: instance.sequenceAcquirePollMs
+    })
 
     const session = new LlamaChatSession({
-      contextSequence: instance.context.getSequence(),
+      contextSequence,
       autoDisposeSequence: true
     })
 

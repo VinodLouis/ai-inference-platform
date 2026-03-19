@@ -483,6 +483,76 @@ class WrkOrkInference extends WrkOrkBase {
     }
   }
 
+  /**
+   * Register a new model on all model workers.
+   * @param {Object} req - Model registration metadata
+   * @returns {Promise<Object[]>} Results from each model worker
+   */
+  async registerModel (req) {
+    const traceId = this.audit.generateTraceId()
+    this.audit.logRequest(this.logger, traceId, 'registerModel', req)
+
+    try {
+      const racks = await this.listRacks({ type: 'model', keys: true })
+      const results = await async.mapLimit(racks, 5, async (rack) => {
+        try {
+          return await this.net_r0.jRequest(
+            rack.info.rpcPublicKey,
+            'registerModel',
+            req,
+            { timeout: 10000 }
+          )
+        } catch (e) {
+          this.logger.error(
+            { rackId: rack.id, err: e },
+            'failed to register model on rack'
+          )
+          return { error: e.message, rackId: rack.id }
+        }
+      })
+
+      return results
+    } catch (err) {
+      this.audit.logError(this.logger, traceId, 'registerModel', err)
+      throw err
+    }
+  }
+
+  /**
+   * Deregister a model on all model workers.
+   * @param {Object} req - { modelId }
+   * @returns {Promise<Object[]>} Results from each model worker
+   */
+  async deregisterModel (req) {
+    const traceId = this.audit.generateTraceId()
+    this.audit.logRequest(this.logger, traceId, 'deregisterModel', req)
+
+    try {
+      const racks = await this.listRacks({ type: 'model', keys: true })
+      const results = await async.mapLimit(racks, 5, async (rack) => {
+        try {
+          return await this.net_r0.jRequest(
+            rack.info.rpcPublicKey,
+            'deregisterModel',
+            req,
+            { timeout: 10000 }
+          )
+        } catch (e) {
+          this.logger.error(
+            { rackId: rack.id, err: e },
+            'failed to deregister model on rack'
+          )
+          return { error: e.message, rackId: rack.id }
+        }
+      })
+
+      return results
+    } catch (err) {
+      this.audit.logError(this.logger, traceId, 'deregisterModel', err)
+      throw err
+    }
+  }
+
   _start (cb) {
     async.series(
       [
@@ -512,6 +582,12 @@ class WrkOrkInference extends WrkOrkBase {
           )
           rpcServer.respond('listJobs', (req) =>
             this.net_r0.handleReply('listJobs', req)
+          )
+          rpcServer.respond('registerModel', (req) =>
+            this.net_r0.handleReply('registerModel', req)
+          )
+          rpcServer.respond('deregisterModel', (req) =>
+            this.net_r0.handleReply('deregisterModel', req)
           )
 
           this.logger.info(

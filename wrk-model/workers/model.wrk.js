@@ -4,6 +4,8 @@ const async = require('async')
 const crypto = require('crypto')
 const fs = require('fs/promises')
 const path = require('path')
+const fsSync = require('fs')
+const { Readable } = require('stream')
 const WrkBase = require('wrk-base/workers/base.wrk')
 
 /**
@@ -149,15 +151,23 @@ class WrkModel extends WrkBase {
   }
 
   async _downloadToFile (url, outPath, headers = {}) {
-    const response = await fetch(url, { headers })
+    const response = await fetch(url, { headers, timeout: 300000 })
 
     if (!response.ok) {
       throw new Error(`ERR_REMOTE_FETCH_FAILED:${response.status}:${url}`)
     }
 
-    const arr = await response.arrayBuffer()
     await fs.mkdir(path.dirname(outPath), { recursive: true })
-    await fs.writeFile(outPath, Buffer.from(arr))
+
+    // Stream large files directly to disk
+    const readStream = Readable.fromWeb(response.body)
+    const writeStream = fsSync.createWriteStream(outPath)
+    return new Promise((resolve, reject) => {
+      readStream.pipe(writeStream)
+      writeStream.on('finish', resolve)
+      writeStream.on('error', reject)
+      readStream.on('error', reject)
+    })
   }
 
   async _materializeModelMeta (modelMeta) {
@@ -263,12 +273,49 @@ class WrkModel extends WrkBase {
         }
 
         this.logger.info({ provider: providerType }, 'provider initialized')
+
+        // Auto-populate Ollama models if enabled
+        if (
+          providerType === 'ollama' &&
+          providerConfig.enabled &&
+          providerConfig.endpoint
+        ) {
+          try {
+            const res = await fetch(`${providerConfig.endpoint}/api/tags`, {
+              timeout: 5000
+            })
+            if (!res.ok) throw new Error(`HTTP ${res.status}`)
+            const data = await res.json()
+            if (Array.isArray(data.models)) {
+              for (const model of data.models) {
+                const modelId = model.name || model.id
+                if (!modelId) continue
+                // Check if already registered (config or runtime)
+                const already =
+                  (this.conf.models || []).find((m) => m.id === modelId) ||
+                  (await this.runtimeModels.get(modelId))
+                if (already) continue
+                await this.registerModel({
+                  id: modelId,
+                  name: model.name || modelId,
+                  provider: 'ollama',
+                  modelName: modelId,
+                  autoload: false
+                })
+                this.logger.info({ modelId }, 'auto-registered Ollama model')
+              }
+            }
+          } catch (err) {
+            this.logger.warn({ err }, 'failed to auto-populate Ollama models')
+          }
+        }
       } catch (err) {
         this.logger.error(
           { provider: providerType, err },
           'provider initialization failed'
         )
-        throw err
+        // Keep worker alive when an optional provider is unavailable.
+        continue
       }
     }
   }
@@ -387,6 +434,34 @@ class WrkModel extends WrkBase {
     return { success: true, modelId: req.id }
   }
 
+  /**
+   * Deregister a runtime model. Removes runtime registry entry and unloads instance.
+   * @param {Object} req
+   * @param {string} req.modelId
+   * @returns {Promise<{success: true, modelId: string}>}
+   */
+  async deregisterModel (req) {
+    if (!req.modelId) throw new Error('ERR_MODEL_ID_REQUIRED')
+
+    // Attempt to unload if loaded; don't fail deregister on unload errors
+    try {
+      await this.unloadModel({ modelId: req.modelId })
+    } catch (e) {
+      this.logger.warn(
+        { modelId: req.modelId, err: e },
+        'unload during deregister failed'
+      )
+    }
+
+    const runtimeEntry = await this.runtimeModels.get(req.modelId)
+    if (!runtimeEntry || !runtimeEntry.value) { throw new Error('ERR_MODEL_NOT_FOUND') }
+
+    await this.runtimeModels.del(req.modelId)
+    this.logger.info({ modelId: req.modelId }, 'model deregistered')
+
+    return { success: true, modelId: req.modelId }
+  }
+
   // ─── Model lifecycle ─────────────────────────────────────────────────────
 
   /**
@@ -427,6 +502,9 @@ class WrkModel extends WrkBase {
       if (modelMeta.provider === 'ollama' && providerEntry.instance.endpoint) {
         modelMeta._ollamaEndpoint = providerEntry.instance.endpoint
       }
+
+      // Provide provider-level settings to provider implementations for runtime tuning.
+      modelMeta._providerSettings = providerEntry.config?.settings || {}
 
       // Load model using provider
       let providerModelPath = modelMeta.path || modelMeta.modelName
@@ -604,6 +682,9 @@ class WrkModel extends WrkBase {
           )
           rpcServer.respond('registerModel', (req) =>
             this.net_r0.handleReply('registerModel', req)
+          )
+          rpcServer.respond('deregisterModel', (req) =>
+            this.net_r0.handleReply('deregisterModel', req)
           )
           rpcServer.respond('loadModel', (req) =>
             this.net_r0.handleReply('loadModel', req)

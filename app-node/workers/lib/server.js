@@ -5,7 +5,34 @@ const auth = require('./auth')
 const MAX_INFLIGHT_INFERENCE = Number(
   process.env.APP_MAX_INFLIGHT_INFERENCE || 5
 )
+const MAX_INFERENCE_MAX_TOKENS = Number(
+  process.env.APP_MAX_INFERENCE_MAX_TOKENS || 128
+)
+const DEFAULT_INFERENCE_MAX_TOKENS = Number(
+  process.env.APP_DEFAULT_INFERENCE_MAX_TOKENS || 64
+)
 let inflightInference = 0
+
+function toPositiveInt (value, fallback) {
+  const n = Number(value)
+  if (!Number.isFinite(n)) return fallback
+  const i = Math.floor(n)
+  return i > 0 ? i : fallback
+}
+
+function normalizeInferenceParams (params = {}) {
+  const maxCap = toPositiveInt(MAX_INFERENCE_MAX_TOKENS, 128)
+  const defaultMax = toPositiveInt(DEFAULT_INFERENCE_MAX_TOKENS, 64)
+
+  const requestedMax = params.max_tokens ?? params.maxTokens
+  const normalizedMax =
+    requestedMax == null ? defaultMax : toPositiveInt(requestedMax, defaultMax)
+
+  return {
+    ...params,
+    max_tokens: Math.min(normalizedMax, maxCap)
+  }
+}
 
 function inferenceConcurrencyPreHandler (ctx, req, rep, done) {
   if (inflightInference >= MAX_INFLIGHT_INFERENCE) {
@@ -143,6 +170,7 @@ async function postInference (ctx, req) {
   // Attach traceId to propagate through the system
   const requestBody = {
     ...req.body,
+    params: normalizeInferenceParams(req.body?.params),
     traceId,
     userEmail: req.user?.email,
     userRoles: req.user?.roles || [],
@@ -225,6 +253,52 @@ async function getInferenceStatus (ctx, req) {
  */
 async function getModels (ctx) {
   return requestOrchestrator(ctx, 'listModels', {}, { timeout: 15000 })
+}
+
+/**
+ * POST /models
+ * Register a new model into the system at runtime.
+ */
+async function postRegisterModel (ctx, req) {
+  const roles = req.user?.roles || []
+  if (!roles.includes('admin')) {
+    const err = new Error('ERR_ADMIN_REQUIRED')
+    err.statusCode = 403
+    throw err
+  }
+
+  const result = await requestOrchestrator(ctx, 'registerModel', req.body, {
+    timeout: 15000
+  })
+
+  return result
+}
+
+/**
+ * DELETE /models/:modelId
+ * Deregister a runtime model across model workers.
+ */
+async function deleteRegisterModel (ctx, req) {
+  const modelId = req.params.modelId
+  if (!modelId) {
+    const err = new Error('ERR_MODEL_ID_REQUIRED')
+    err.statusCode = 400
+    throw err
+  }
+
+  const roles = req.user?.roles || []
+  if (!roles.includes('admin')) {
+    const err = new Error('ERR_ADMIN_REQUIRED')
+    err.statusCode = 403
+    throw err
+  }
+
+  return requestOrchestrator(
+    ctx,
+    'deregisterModel',
+    { modelId },
+    { timeout: 15000 }
+  )
 }
 
 /**
@@ -404,6 +478,20 @@ function routes (ctx) {
       url: '/racks',
       handler: async (req, rep) => {
         send200(rep, await getRacks(ctx, req))
+      }
+    },
+    {
+      method: 'DELETE',
+      url: '/models/:modelId',
+      handler: async (req, rep) => {
+        send200(rep, await deleteRegisterModel(ctx, req))
+      }
+    },
+    {
+      method: 'POST',
+      url: '/models',
+      handler: async (req, rep) => {
+        send200(rep, await postRegisterModel(ctx, req))
       }
     }
   ]

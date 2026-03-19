@@ -245,12 +245,17 @@ function parseBearerToken (req) {
 async function signUpRoute (ctx, req) {
   const conf = getAuthConfig(ctx)
 
-  if (!conf.signupSecret) {
-    throw new AuthError('ERR_SIGNUP_SECRET_NOT_CONFIGURED', 500)
-  }
+  const isAdmin = req.user?.roles && req.user.roles.includes('admin')
 
-  if (req.body.signup_secret !== conf.signupSecret) {
-    throw new AuthError('ERR_SIGNUP_SECRET_INVALID', 403)
+  // If the caller is not an authenticated admin, require the signup secret.
+  if (!isAdmin) {
+    if (!conf.signupSecret) {
+      throw new AuthError('ERR_SIGNUP_SECRET_NOT_CONFIGURED', 500)
+    }
+
+    if (req.body.signup_secret !== conf.signupSecret) {
+      throw new AuthError('ERR_SIGNUP_SECRET_INVALID', 403)
+    }
   }
 
   const usersStore = getUsersStore(ctx)
@@ -352,7 +357,7 @@ function composePreHandler (existing, authPreHandler) {
 }
 
 function withProtectedRoutes (ctx, routes) {
-  const publicPaths = new Set(['/auth/signup', '/auth/login'])
+  const publicPaths = new Set(['/auth/login'])
 
   return routes.map((route) => {
     if (publicPaths.has(route.url)) {

@@ -94,6 +94,9 @@ class WrkInference extends WrkBase {
     const start = Date.now()
 
     const modelRpcKey = this.conf.modelWorkerRpcKey
+    const modelRequestTimeoutMs = Number(this.conf.modelRequestTimeoutMs) > 0
+      ? Number(this.conf.modelRequestTimeoutMs)
+      : 180000
 
     if (!modelRpcKey) {
       throw new Error('ERR_MODEL_WORKER_RPC_KEY_MISSING')
@@ -119,7 +122,7 @@ class WrkInference extends WrkBase {
         params: job.params,
         traceId: job.traceId || job.id // Propagate trace ID
       },
-      { timeout: 60000 }
+      { timeout: modelRequestTimeoutMs }
     )
 
     // Audit: Log RPC response

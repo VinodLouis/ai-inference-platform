@@ -6,13 +6,15 @@
         "type": "llama-cpp",
         "enabled": true,
         "settings": {
-          "modelBaseDir": "./models",
-          "modelCacheDir": "./models/.cache"
+          "modelBaseDir": "./store/models",
+          "modelCacheDir": "./store/models/.cache",
+          "sequenceAcquireTimeoutMs": 120000,
+          "sequenceAcquirePollMs": 25
         }
       },
       {
         "type": "ollama",
-        "enabled": true,
+        "enabled": false,
         "endpoint": "http://localhost:11434"
       }
     ]

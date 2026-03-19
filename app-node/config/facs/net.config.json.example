@@ -1,3 +1,6 @@
 {
-  "r0": {}
+  "r0": {
+    "allow": [],
+    "allowLocal": true
+  }
 }
