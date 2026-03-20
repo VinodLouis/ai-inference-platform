@@ -294,7 +294,7 @@ LLMProvider  (wrk-model/providers/llm-provider.js)
 
 ### 8.2. PAAS
 
-![PAAS](./diagrams/PAAS.drawio.png)
+![PAAS](./diagrams/paas.png)
 
 ### 8.3. Scaling
 
@@ -345,6 +345,8 @@ This is the only service that faces the public internet. It converts incoming HT
 | DELETE | `/inference/:jobId` | Protected | Cancel a queued or running job (requires `rackId` query param)                  |
 | GET    | `/inference`        | Protected | List jobs from a rack (`rackId` required, optional `status` and `limit` params) |
 | GET    | `/models`           | Protected | List available models across all model workers                                  |
+| POST   | `/models`           | Admin     | Register a new model at runtime (admin-only)                                    |
+| DELETE | `/models/:modelId`  | Admin     | Deregister a runtime model (admin-only)                                         |
 | GET    | `/racks`            | Protected | List registered racks (optional `type` query filter)                            |
 
 **Request validation schemas:**
@@ -352,6 +354,7 @@ This is the only service that faces the public internet. It converts incoming HT
 - `POST /auth/signup` — `{ email (format: email), password (minLength: 6), signup_secret (string), roles (array, minItems: 1) }`
 - `POST /auth/login` — `{ email, password }`
 - `POST /inference` — `{ modelId (required), anyOf: [prompt, inputs], params (optional) }`
+- `POST /models` — `{ id (string), name (string), provider (string), path (string), format?, source? { type:'huggingface', repo, files[], tokenEnv? }, autoload?: boolean }` — admin-only model registration
 
 **Tier routing:**
 
