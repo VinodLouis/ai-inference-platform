@@ -109,6 +109,60 @@ async function initAuthStore (ctx) {
   return ctx._usersDb
 }
 
+async function ensureInitialAdmin (ctx) {
+  try {
+    const usersStore = getUsersStore(ctx)
+
+    // Check if any user exists
+    let hasAny = false
+    for await (const _ of usersStore.createReadStream({ limit: 1 })) {
+      hasAny = true
+      break
+    }
+
+    if (hasAny) return
+
+    // No users — try to create an initial admin from config or env
+    const authConf = ctx.conf.auth || {}
+    const init = authConf.initialAdmin || {
+      email: process.env.APP_INITIAL_ADMIN_EMAIL || null,
+      password: process.env.APP_INITIAL_ADMIN_PASSWORD || null
+    }
+
+    if (!init || !init.email || !init.password) {
+      ctx.logger.warn(
+        { warn: 'no-initial-admin-provided' },
+        'auth: no initial admin configured; create one via /auth/signup with signupSecret'
+      )
+      return
+    }
+
+    const email = String(init.email).toLowerCase()
+    const password = String(init.password)
+
+    if (password.length < 6) {
+      ctx.logger.warn(
+        { email },
+        'auth: initial admin password too short; skip creating default admin'
+      )
+      return
+    }
+
+    const user = {
+      email,
+      passwordHash: hashPassword(password),
+      roles: ['admin'],
+      createdAt: Date.now(),
+      initial: true
+    }
+
+    await usersStore.put(email, user)
+    ctx.logger.info({ email }, 'auth: initial admin created; remove APP_INITIAL_ADMIN_* env vars')
+  } catch (err) {
+    ctx.logger.error({ err }, 'auth: failed to create initial admin')
+  }
+}
+
 async function closeAuthStore (ctx) {
   if (ctx._sharedAuthCorestore) {
     await ctx._sharedAuthCorestore.close()
@@ -377,6 +431,7 @@ module.exports = {
   authHandlers,
   closeAuthStore,
   initAuthStore,
+  ensureInitialAdmin,
   loginRoute,
   requireAuth,
   signUpRoute,

@@ -59,6 +59,8 @@ class WrkNodeHttp extends WrkBase {
         async () => {
           // Initialize persistent auth store
           await auth.initAuthStore(this)
+          // Ensure initial admin exists when configured (safe bootstrap)
+          await auth.ensureInitialAdmin(this)
 
           const httpd = this.httpd_h0
 

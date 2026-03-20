@@ -9,7 +9,7 @@ This worker is optimized around two runtime models:
 
 ## Prerequisites
 
-Ensure wrk-model/config/common.json has both providers enabled:
+By default, keep `ollama` explicitly configured but disabled in `wrk-model/config/common.json`:
 
 ```json
 {
@@ -25,11 +25,21 @@ Ensure wrk-model/config/common.json has both providers enabled:
       },
       {
         "type": "ollama",
-        "enabled": true,
+        "enabled": false,
         "endpoint": "http://localhost:11434"
       }
     ]
   }
+}
+```
+
+Enable `ollama` only if an Ollama server is reachable from the model worker pod:
+
+```json
+{
+  "type": "ollama",
+  "enabled": true,
+  "endpoint": "http://localhost:11434"
 }
 ```
 
@@ -78,10 +88,10 @@ npx hp-rpc-cli -s "$MODEL_WORKER_RPC_KEY" -m registerModel -d '{
 
 ## What Gets Updated
 
-- gemma3-1b is registered in runtime model registry.
-- phi2-2.7b is registered and downloaded from Hugging Face.
+- Any ollama model is registered in runtime model registry (only usable when `ollama` is enabled and reachable).
+- tiny lamma is registered and downloaded from Hugging Face.
 - GGUF artifacts are cached under wrk-model/models/.cache.
-- Both models become available for /infer.
+- llama-cpp models become available for /infer immediately; ollama models require enabled/reachable Ollama.
 
 ## Verify Inference
 
@@ -107,7 +117,8 @@ Example request body:
 
 - Use -t 600000 for first-time Phi-2 download.
 - Keep autoload: true for Phi-2 so it is loaded immediately after registration.
-- Ollama auto-pulls gemma3:1b if it is not present locally.
+- Ollama is disabled by default to keep the worker stable in environments without an Ollama sidecar/service.
+- If you enable Ollama, it will try to connect local ollama endpoint to search for available models
 
 ## Unload Models (End of Run)
 
