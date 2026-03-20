@@ -1,5 +1,9 @@
 {
   "name": "ai-inference-platform",
+  "author": {
+    "name": "Vinod Louis",
+    "email": "vinodlouis@hotmail.com"
+  },
   "version": "1.0.0",
   "description": "Distributed AI Inference Platform - P2P network for model serving",
   "private": true,

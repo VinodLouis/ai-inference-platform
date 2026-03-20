@@ -14,7 +14,8 @@ ai-inference-platform/
 ├── wrk-ork/           # Orchestrator – service registry + request routing
 ├── wrk-inference/     # Inference Worker – job queue + model execution
 ├── wrk-model/         # Model Worker – LLM management + text generation
-└── app-node/          # HTTP Gateway – REST ↔ RPC bridge for clients
+├── app-node/          # HTTP Gateway – REST ↔ RPC bridge for clients
+└── ui-console/        # React + Ant Design web UI (admin + user panels)
 ```
 
 ---
@@ -26,12 +27,30 @@ ai-inference-platform/
 | Node.js    | ≥ 18.x  |
 | npm        | ≥ 9.x   |
 
-No other tooling needed. All Hyperswarm/Hyperbee primitives are installed via npm.
+For local quick-start the only required tooling is Node.js and npm. For containerized or cloud deployments you will also need Docker, `kubectl`, and Helm (see `.helm/README.md` and `CLOUD-DEPLOYMENT-README.md`).
+
+---
+
+## Web UI
+
+The project includes a separate frontend app in [ui-console/README.md](ui-console/README.md).
+
+It provides:
+
+- Admin panel to create users
+- User login panel
+- Model selection + inference submit
+- Manual "check status" action to fetch inference completion and result
+- Optional auto-poll mode and job history table for status tracking
+- Route-based access: `/admin` (admin role only) and `/inference` (user/premium/enterprise)
+- Backend owner-scoped history: users only see jobs owned by their authenticated account
+- Multi-rack history support: UI aggregates owner-scoped jobs across all live inference racks
 
 ---
 
 ## Quick-start
 
+This quick-start runs services locally using Node.js processes. For Kubernetes/Helm deployments see `.helm/README.md`.
 Each service runs in its own terminal. Follow these steps in order.
 
 ### 1 — Install dependencies
@@ -66,9 +85,66 @@ cd app-node && ./setup-configs.sh && cd ..
 
 This copies all `.example` files to their actual config files.
 
-### 3 — Configure the Model Worker
+### 3 — Configure the Model Worker (Ollama & Local/Helm)
 
-Edit `wrk-model/config/common.json` to configure providers and the default autoload ***REMOVED***
+#### Using Ollama for Inference (Local/Manual)
+
+To use Ollama as a remote inference provider when running locally:
+
+1. Start Ollama on your machine (default port: 11434):
+
+```sh
+ollama serve
+```
+
+2. Edit `wrk-model/config/common.json`:
+
+- Set the Ollama provider to `"enabled": true` and set `"endpoint": "http://localhost:11434"` (or your Ollama server address).
+- Example:
+  ```json
+  {
+    "type": "ollama",
+    "enabled": true,
+    "endpoint": "http://localhost:11434"
+  }
+  ```
+- Register a model with `"provider": "ollama"` in the `models` array.
+
+3. Start the model worker as usual.
+
+#### Using Ollama for Inference (Helm/Kubernetes)
+
+To use Ollama from inside Minikube or Kubernetes:
+
+1. Start Ollama on your host machine (default port: 11434):
+
+```sh
+ollama serve
+```
+
+2. In your Helm values file (e.g., `.helm/values.yaml`), add:
+
+```yaml
+model:
+  ollamaEndpoint: "http://host.minikube.internal:11434"
+```
+
+3. Template the `wrk-model/config/common.json` ConfigMap to use this value for the Ollama provider endpoint:
+
+```json
+{
+  "type": "ollama",
+  "enabled": true,
+  "endpoint": "{{ .Values.model.ollamaEndpoint }}"
+}
+```
+
+4. Register a model with `"provider": "ollama"` in the `models` array.
+5. Deploy or upgrade your Helm release as usual.
+
+This ensures both local and Helm deployments can use Ollama for inference, with the correct endpoint for each environment.
+
+Edit `wrk-model/config/common.json` to configure providers and the default autoload model:
 
 ```json
 {
@@ -113,14 +189,14 @@ Edit `wrk-model/config/common.json` to configure providers and the default autol
 }
 ```
 
-**Default startup ***REMOVED*****
+**Default startup model:**
 
 - **TinyLlama 1.1B Chat** (`llama-cpp`) – auto-downloaded and auto-loaded on `wrk-model` startup
 
 **Optional runtime models to register later:**
 
-- **Phi-2 2.7B Q4** (`llama-cpp`) – local GGUF via Hugging Face auto-download
-- **Gemma 3 1B** (`ollama`) – simple runtime registration and serving
+- **Qwen2.5:0.5b** (`ollama`) – lsimple runtime registration and serving
+- **deepseek-coder:1.3b** (`ollama`) – simple runtime registration and serving
 
 **Quantization levels** (smaller = faster, less memory):
 
@@ -152,7 +228,7 @@ Watch for download and load progress on startup:
 {"modelId":"tinyllama-1.1b","provider":"llama-cpp"} model loaded
 ```
 
-Then, if needed, register additional runtime models (Phi-2 and Gemma):
+Then, if needed, register additional runtime models (Qwen2.5:0.5b and deepseek-coder:1.3b):
 
 - [wrk-model/PROVIDERS.md](wrk-model/PROVIDERS.md)
 
@@ -180,6 +256,13 @@ cd wrk-inference
 node worker.js --wtype wrk-inference --env development --debug true --rack inference-rack-1
 ```
 
+Default Helm deployment uses 2 inference pods, so if you are running manually you can start a second rack too:
+
+```sh
+cd wrk-inference
+node worker.js --wtype wrk-inference --env development --debug true --rack inference-rack-2
+```
+
 Note its `rpcPublicKey` from either the terminal logs or the status file (`wrk-inference/status/wrk-inference-inference-rack-1.json`).
 
 ### 7 — Start the Orchestrator
@@ -196,11 +279,17 @@ Grab the orchestrator's `rpcPublicKey` from either the terminal logs or the stat
 Use `hp-rpc-cli` (included as an npx-runnable tool):
 
 ```sh
-# Register the Inference Worker
+# Register Inference Workers (default: 2 racks)
 npx hp-rpc-cli \
   -s <ORK_RPC_KEY> \
   -m registerRack \
   -d '{"id":"inference-rack-1","type":"inference","info":{"rpcPublicKey":"<INFERENCE_RPC_KEY>"}}' \
+  -t 10000
+
+npx hp-rpc-cli \
+  -s <ORK_RPC_KEY> \
+  -m registerRack \
+  -d '{"id":"inference-rack-2","type":"inference","info":{"rpcPublicKey":"<INFERENCE_RPC_KEY_2>"}}' \
   -t 10000
 
 # Register the Model Worker
@@ -210,6 +299,8 @@ npx hp-rpc-cli \
   -d '{"id":"model-rack-1","type":"model","info":{"rpcPublicKey":"<MODEL_RPC_KEY>"}}' \
   -t 10000
 ```
+
+Note: registering racks is a one-time operation. If you are deploying with Helm, the chart includes an optional `registerRacks` job (see `.helm/README.md`) that can perform this registration for you—enable it only after RPC keys are available, run a single `helm upgrade` to execute registration, then disable it for subsequent upgrades. Avoid re-registering racks on every deployment.
 
 ### 9 — Configure and start the HTTP Gateway
 
@@ -276,8 +367,9 @@ All endpoints run on the `app-node` HTTP gateway (default port 3000).
 - `POST /inference` – Submit a text generation job
 - `GET /inference/:jobId` – Check job status and retrieve results
 - `DELETE /inference/:jobId` – Cancel a queued/running job
-- `GET /inference` – List jobs for a specific rack (`rackId` query required)
+- `GET /inference` – List jobs for a specific rack (`rackId` query required, results are owner-scoped for the authenticated user)
 - `GET /models` – List available models
+- `POST /models` – Register a model at runtime
 - `GET /racks` – List registered service racks
 
 ### Authentication
@@ -305,6 +397,25 @@ The `signup_secret` must match the value in your config. This prevents unauthori
   "roles": ["user"]
 }
 ```
+
+### Initial admin user (auto-created on startup — local only)
+
+If `app-node/config/common.json` includes an `auth.initialAdmin` object, the gateway will automatically create that user on startup. This is intended for local bootstrapping and quick demos. For Helm/kubernetes deployments the Helm chart documents a safe registration flow in `.helm/README.md`.
+
+Example `app-node/config/common.json` snippet (local):
+
+```json
+"auth": {
+  "initialAdmin": {
+    "email": "admin@example.com",
+    "password": "secret123"
+  }
+}
+```
+
+Security notes:
+
+- The initial admin is intended as a one-time bootstrap step. After first successful startup and login, remove the `initialAdmin` entry or rotate the password.
 
 #### Login and get a token
 
@@ -378,6 +489,8 @@ curl -H "Authorization: Bearer $TOKEN" \
 If omitted, the orchestrator resolves job ownership using its `job-ownership`
 Hyperbee index (`jobId -> rackId`).
 
+Status and cancel operations are ownership-checked: authenticated users can only access jobs they created.
+
 **While running:**
 
 ```json
@@ -423,6 +536,43 @@ curl -H "Authorization: Bearer $TOKEN" http://localhost:3000/models
   }
 ]
 ```
+
+#### Register a model at runtime
+
+```sh
+# Preferred: include `modelName` for Ollama models
+curl -X POST http://localhost:3000/models \
+  -H "Authorization: Bearer $TOKEN" \
+  -H 'Content-Type: application/json' \
+  -d '{
+    "id": "deepseek-coder:1.3b",
+    "name": "deepseek-coder:1.3b",
+    "provider": "ollama",
+    "type": "code-generation",
+    "modelName": "deepseek-coder:1.3b"
+  }'
+```
+
+See [wrk-model/PROVIDERS.md](wrk-model/PROVIDERS.md) for provider-specific payload options.
+
+#### Deregister (remove) a runtime model
+
+You can remove a runtime-registered model from all model workers. The platform will attempt to unload the model instance from memory and then delete the runtime registry entry.
+
+- Via HTTP (gateway):
+
+```sh
+curl -X DELETE http://localhost:3000/models/deepseek-coder:1.3b \
+  -H "Authorization: Bearer $TOKEN"
+```
+
+- Via direct RPC using `hp-rpc-cli` against the orchestrator (or a specific ork key):
+
+```sh
+npx hp-rpc-cli -s "$ORK_RPC_KEY" -m deregisterModel -d '{"modelId":"deepseek-coder:1.3b"}'
+```
+
+The DELETE call will proxy to the orchestrator which forwards the `deregisterModel` RPC to all registered model racks.
 
 #### List service racks
 
@@ -590,6 +740,8 @@ wrk-inference/
 ### Operational Notes
 
 - `GET /inference` (list jobs) remains rack-scoped and requires explicit `rackId`.
+- Job history results are owner-scoped by backend authentication; users only see their own jobs.
+- For multi-rack history views, query `GET /racks?type=inference`, call `GET /inference` per rack, and merge client-side.
 - Back up `store/` directories periodically; Hyperbee does not provide automatic multi-node replication by default.
 
 ### Shared Auth Store
@@ -627,7 +779,7 @@ When set, the gateway opens a **dedicated Corestore + Hyperbee** at that path in
 ```yaml
 services:
   gateway-1:
-  ***REMOVED*** ai-inference-gateway
+    image: ai-inference-gateway
     volumes:
       - auth-store:/data/auth-store
     environment:
@@ -636,7 +788,7 @@ services:
       - "3001:3000"
 
   gateway-2:
-  ***REMOVED*** ai-inference-gateway
+    image: ai-inference-gateway
     volumes:
       - auth-store:/data/auth-store
     environment:
@@ -794,23 +946,23 @@ Here is a realistic trace of a single inference request flowing through all four
 #### 3. Orchestrator logs the routing request and RPC call to inference worker
 
 ```json
-{"level":30,"time":1741444335145,"name":"wrk:wrk-ork-***REMOVED***42570","audit":true,"eventType":"REQUEST","timestamp":"2026-03-08T14:32:15.145Z","traceId":"f47ac10b-58cc-4372-a567-0e02b2c3d479","method":"routeInference","modelId":"tinyllama-1.1b","hasPrompt":true}
-{"level":30,"time":1741444335150,"name":"wrk:wrk-ork-***REMOVED***42570","audit":true,"eventType":"RPC_CALL","timestamp":"2026-03-08T14:32:15.150Z","traceId":"f47ac10b-58cc-4372-a567-0e02b2c3d479","targetService":"inference-rack-1","method":"runInference","modelId":"tinyllama-1.1b"}
+{"level":30,"time":1741444335145,"name":"wrk:wrk-ork-inference:42570","audit":true,"eventType":"REQUEST","timestamp":"2026-03-08T14:32:15.145Z","traceId":"f47ac10b-58cc-4372-a567-0e02b2c3d479","method":"routeInference","modelId":"tinyllama-1.1b","hasPrompt":true}
+{"level":30,"time":1741444335150,"name":"wrk:wrk-ork-inference:42570","audit":true,"eventType":"RPC_CALL","timestamp":"2026-03-08T14:32:15.150Z","traceId":"f47ac10b-58cc-4372-a567-0e02b2c3d479","targetService":"inference-rack-1","method":"runInference","modelId":"tinyllama-1.1b"}
 ```
 
 #### 4. Inference Worker logs job creation and calls Model Worker
 
 ```json
-{"level":30,"time":1741444335200,"name":"wrk:wrk-***REMOVED***42580","audit":true,"eventType":"REQUEST","timestamp":"2026-03-08T14:32:15.200Z","traceId":"f47ac10b-58cc-4372-a567-0e02b2c3d479","method":"runInference","modelId":"tinyllama-1.1b","promptLength":30}
-{"level":30,"time":1741444335210,"name":"wrk:wrk-***REMOVED***42580","audit":true,"eventType":"JOB_STATUS","timestamp":"2026-03-08T14:32:15.210Z","traceId":"f47ac10b-58cc-4372-a567-0e02b2c3d479","jobId":"c3d4e5f6-...","status":"queued","modelId":"tinyllama-1.1b"}
-{"level":30,"time":1741444335220,"name":"wrk:wrk-***REMOVED***42580","audit":true,"eventType":"RPC_CALL","timestamp":"2026-03-08T14:32:15.220Z","traceId":"f47ac10b-58cc-4372-a567-0e02b2c3d479","targetService":"a9b8c7d6...","method":"runModel","jobId":"c3d4e5f6-...","modelId":"tinyllama-1.1b"}
+{"level":30,"time":1741444335200,"name":"wrk:wrk-inference:42580","audit":true,"eventType":"REQUEST","timestamp":"2026-03-08T14:32:15.200Z","traceId":"f47ac10b-58cc-4372-a567-0e02b2c3d479","method":"runInference","modelId":"tinyllama-1.1b","promptLength":30}
+{"level":30,"time":1741444335210,"name":"wrk:wrk-inference:42580","audit":true,"eventType":"JOB_STATUS","timestamp":"2026-03-08T14:32:15.210Z","traceId":"f47ac10b-58cc-4372-a567-0e02b2c3d479","jobId":"c3d4e5f6-...","status":"queued","modelId":"tinyllama-1.1b"}
+{"level":30,"time":1741444335220,"name":"wrk:wrk-inference:42580","audit":true,"eventType":"RPC_CALL","timestamp":"2026-03-08T14:32:15.220Z","traceId":"f47ac10b-58cc-4372-a567-0e02b2c3d479","targetService":"a9b8c7d6...","method":"runModel","jobId":"c3d4e5f6-...","modelId":"tinyllama-1.1b"}
 ```
 
 #### 5. Model Worker executes inference and responds
 
 ```json
-{"level":30,"time":1741444335300,"name":"wrk:wrk-***REMOVED***42590","audit":true,"eventType":"REQUEST","timestamp":"2026-03-08T14:32:15.300Z","traceId":"f47ac10b-58cc-4372-a567-0e02b2c3d479","method":"runModel","modelId":"tinyllama-1.1b"}
-{"level":30,"time":1741444337640,"name":"wrk:wrk-***REMOVED***42590","audit":true,"eventType":"RESPONSE","timestamp":"2026-03-08T14:32:17.640Z","traceId":"f47ac10b-58cc-4372-a567-0e02b2c3d479","method":"runModel","durationMs":2340,"tokens":18}
+{"level":30,"time":1741444335300,"name":"wrk:wrk-model:42590","audit":true,"eventType":"REQUEST","timestamp":"2026-03-08T14:32:15.300Z","traceId":"f47ac10b-58cc-4372-a567-0e02b2c3d479","method":"runModel","modelId":"tinyllama-1.1b"}
+{"level":30,"time":1741444337640,"name":"wrk:wrk-model:42590","audit":true,"eventType":"RESPONSE","timestamp":"2026-03-08T14:32:17.640Z","traceId":"f47ac10b-58cc-4372-a567-0e02b2c3d479","method":"runModel","durationMs":2340,"tokens":18}
 ```
 
 #### 6. Gateway completes the response
@@ -883,7 +1035,7 @@ When errors occur, the audit logger captures the error message and stack trace:
 ```json
 {"level":30,"time":1741447522123,"name":"wrk:wrk-node-http:42561","audit":true,"eventType":"REQUEST","timestamp":"2026-03-08T14:45:22.123Z","traceId":"e8a3b1c2-d4f5-6789-abcd-ef0123456789","method":"POST /inference","modelId":"tinyllama-1.1b","userId":"user@example.com","ip":"127.0.0.1"}
 {"level":30,"time":1741447522130,"name":"wrk:wrk-node-http:42561","audit":true,"eventType":"RPC_CALL","timestamp":"2026-03-08T14:45:22.130Z","traceId":"e8a3b1c2-d4f5-6789-abcd-ef0123456789","targetService":"a1b2c3d4...","method":"routeInference","modelId":"tinyllama-1.1b"}
-{"level":50,"time":1741447522456,"name":"wrk:wrk-ork-***REMOVED***42570","audit":true,"eventType":"ERROR","timestamp":"2026-03-08T14:45:22.456Z","traceId":"e8a3b1c2-d4f5-6789-abcd-ef0123456789","method":"routeInference","error":"ERR_NO_INFERENCE_WORKERS","modelId":"tinyllama-1.1b"}
+{"level":50,"time":1741447522456,"name":"wrk:wrk-ork-inference:42570","audit":true,"eventType":"ERROR","timestamp":"2026-03-08T14:45:22.456Z","traceId":"e8a3b1c2-d4f5-6789-abcd-ef0123456789","method":"routeInference","error":"ERR_NO_INFERENCE_WORKERS","modelId":"tinyllama-1.1b"}
 ```
 
 This shows the request failed because no inference workers were registered with the orchestrator.
@@ -940,7 +1092,7 @@ npx hp-rpc-cli \
   -t 30000
 ```
 
-For adding runtime models later (Gemma 3 1B + Phi-2 2.7B), see:
+For adding runtime models later (Qwen2.5:0.5 + deepseek-coder:1.3b), see:
 
 - [wrk-model/PROVIDERS.md](wrk-model/PROVIDERS.md)
 
@@ -1145,9 +1297,35 @@ Verify:
 
 One of the strongest use cases of this platform is dynamically registering models at runtime (no service restart), so you can roll out or switch LLMs quickly.
 
-For the focused runtime flow (Gemma 3 1B + Phi-2 2.7B), registration commands, unload commands, and verification, see:
+For the focused runtime flow (qwen2.5 0.5b + deepseek-coder:1.3b), registration commands, unload commands, and verification, see:
 
 - [wrk-model/PROVIDERS.md](wrk-model/PROVIDERS.md)
+
+---
+
+## Future Extensions
+
+This project is intentionally modular and designed to be extended. Possible future improvements and feature ideas include:
+
+- **Support rate limiting:** request-level and per-user/rack quotas with configurable throttling (token-bucket, leaky-bucket), burst controls, and global rate policies.
+- **Admin panel to show health of racks:** realtime dashboard in the `ui-console` exposing rack health, CPU/GPU usage, memory, model load, queue lengths, RPC latency, and quick actions (drain, restart, scale).
+- **Streaming response support:** add support for streaming token-by-token inference responses through the HTTP gateway and WebSocket/Server-Sent Events to clients to reduce latency for long generations.
+- **Autoscaling & orchestration:** autoscale inference/model workers based on queue depth, CPU/GPU utilization, and SLOs (integrate with Kubernetes HPA/Cluster Autoscaler or custom scalers).
+- **Observability & tracing:** Prometheus metrics, Grafana dashboards, and distributed tracing (OpenTelemetry) across orchestrator, inference, and model workers.
+- **Health checks & graceful shutdown:** readiness/liveness probes, connection draining, and smooth model unload/load for zero-downtime deployments.
+- **Provider plugin architecture:** formal plugin API to add new providers (remote or local), with hot-pluggable providers, capability discovery, and per-provider health checks.
+- **Model versioning & canary deployments:** rollout strategies for new model versions, traffic splitting, A/B testing, and metrics comparison tooling.
+- **Fine-grained RBAC & audit logging:** role-based access controls for admin features, model registration, and detailed audit trails for actions taken via the UI or API.
+- **Quotas, billing, and billing metering:** per-tenant quotas, usage metering, and billing hooks for paid tiers or rate-limited plans.
+- **Backpressure & prioritization:** request prioritization, job preemption, and QoS classes for premium vs free users to manage resource contention.
+- **Secure secret management:** integrate with secret managers (Vault, AWS Secrets Manager) to protect API keys and model provider credentials.
+- **GPU scheduling & multi-accelerator support:** explicit scheduling and packing strategies for CUDA/ROCm devices, memory-aware placement, and model sharding.
+- **Webhooks & async callbacks:** optional webhook callbacks for job completion to integrate with external workflows.
+- **Local/offline model caching:** pre-warm and cache popular models across racks to reduce cold-start latency and bandwidth usage.
+- **Developer SDKs & client libraries:** provide small SDKs (Node, Python) with helpers for streaming, retries, backoff, and job management.
+- **Example deployments & CI/CD:** curated `helm` values, `docker-compose` examples, and CI pipelines for integration and performance testing.
+- **Policy-driven inference controls:** content safety filters, rate limits per content-type, and per-model inference constraints.
+- **Performance benchmarking & chaos testing:** standardized benchmarks, load-testing suites, and chaos experiments to validate resilience.
 
 ---
 
@@ -1156,6 +1334,15 @@ For the focused runtime flow (Gemma 3 1B + Phi-2 2.7B), registration commands, u
 For full step-by-step scalability validation (instance counts, rack topology, user role combinations, failover checks, premium routing checks, and ork failover), see:
 
 - [SCALABILITY-TEST-README.md](SCALABILITY-TEST-README.md)
+
+---
+
+## Cloud Deployment
+
+For cloud deployment architecture choices (single VM, multi-VM, Docker Compose, Kubernetes, and split control/data plane with GPU workers), plus production checklists and cloud provider mappings, see:
+
+- [CLOUD-DEPLOYMENT-README.md](CLOUD-DEPLOYMENT-README.md)
+- [.helm/README.md](.helm/README.md)
 
 ---
 

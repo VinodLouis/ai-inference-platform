@@ -77,7 +77,7 @@ class OllamaProvider extends LLMProvider {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        ***REMOVED*** instance.modelName,
+        model: instance.modelName,
         prompt,
         stream: false,
         temperature: params.temperature,

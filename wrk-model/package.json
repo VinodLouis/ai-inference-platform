@@ -1,5 +1,9 @@
 {
   "name": "wrk-model",
+  "author": {
+    "name": "Vinod Louis",
+    "email": "vinodlouis@hotmail.com"
+  },
   "version": "1.0.0",
   "description": "Model Worker – manages locally loaded AI models and runs inference",
   "license": "Apache-2.0",

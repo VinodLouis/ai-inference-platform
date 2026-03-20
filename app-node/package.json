@@ -1,5 +1,9 @@
 {
   "name": "app-node",
+  "author": {
+    "name": "Vinod Louis",
+    "email": "vinodlouis@hotmail.com"
+  },
   "version": "1.0.0",
   "description": "HTTP Gateway – bridges REST clients to the Hyperswarm RPC network",
   "license": "Apache-2.0",

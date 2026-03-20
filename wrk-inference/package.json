@@ -1,5 +1,9 @@
 {
   "name": "wrk-inference",
+  "author": {
+    "name": "Vinod Louis",
+    "email": "vinodlouis@hotmail.com"
+  },
   "version": "1.0.0",
   "description": "Inference Worker – executes AI inference jobs and manages job state",
   "license": "Apache-2.0",

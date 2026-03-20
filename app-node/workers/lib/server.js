@@ -123,7 +123,7 @@ async function requestOrchestrator (ctx, method, payload, options) {
       ctx.logger.warn(
         {
           method,
-          ***REMOVED*** key.substring(0, 16),
+          ork: key.substring(0, 16),
           error: err.message
         },
         'orchestrator request failed, trying next'

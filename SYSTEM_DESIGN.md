@@ -175,7 +175,7 @@ The orchestrator supports differentiated service tiers:
 
 ### 3.8. Health & Lease System
 
-Rack liveness is tracked through a lease-based health ***REMOVED***
+Rack liveness is tracked through a lease-based health model:
 
 - **Registration** — `registerRack` sets `health: { status: 'up', leaseMs, lastSeenAt, failCount: 0 }`.
 - **Heartbeat** — `heartbeatRack` refreshes `lastSeenAt`, resets `failCount` to 0, and flips status back to `up`.
@@ -215,7 +215,7 @@ Rough per-service guidelines:
 | wrk-model (model worker)         | ≥ Model size + 2 GB overhead | A 7B Q4 model requires ~4.5 GB RAM; a 70B Q4 model requires ~40 GB RAM |
 | GPU (optional)                   | Any CUDA/ROCm-compatible GPU | Required for fast inference; CPU inference is supported but slow       |
 
-**Netw***REMOVED***** Any Hyperswarm node needs to be reachable on UDP. Behind NAT, Hyperswarm does hole-punching; if that fails it uses a relay.
+**Network:** Any Hyperswarm node needs to be reachable on UDP. Behind NAT, Hyperswarm does hole-punching; if that fails it uses a relay.
 
 ---
 
@@ -645,7 +645,7 @@ Models come from two places, merged at query time:
 | `registerModel` | Register a model at runtime; persists to `runtimeModels` Hyperbee. Validates `id` and `provider`. Auto-loads if `autoload: true`. |
 | `loadModel`     | Explicitly pre-warm a model into memory                                                                                           |
 | `unloadModel`   | Free a model from memory                                                                                                          |
-| `runModel`      | Execute ***REMOVED*** validates `modelId` and `prompt`, auto-loads if needed, normalises params, delegates to provider `generate()`  |
+| `runModel`      | Execute inference: validates `modelId` and `prompt`, auto-loads if needed, normalises params, delegates to provider `generate()`  |
 
 **Implemented providers:**
 

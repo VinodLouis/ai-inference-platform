@@ -116,7 +116,7 @@ class WrkBase extends BfxWrkBase {
 
           // Audit: Log service ready event
           this.audit.logLifecycle(this.logger, 'ready', {
-          ***REMOVED*** this.ctx.wtype,
+            service: this.ctx.wtype,
             rack: this.ctx.rack,
             rpcPublicKey: this.status.rpcPublicKey,
             pid: process.pid
