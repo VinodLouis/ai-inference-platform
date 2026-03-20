@@ -1,0 +1,12 @@
+**/node_modules
+**/.git
+**/.DS_Store
+**/store
+**/status
+**/models/.cache
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+.gitignore
+.vscode
