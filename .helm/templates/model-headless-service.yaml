@@ -1,0 +1,12 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "aip.fullname" . }}-wrk-model
+  labels:
+    {{- include "aip.labels" . | nindent 4 }}
+    app.kubernetes.io/component: wrk-model
+spec:
+  clusterIP: None
+  selector:
+    app.kubernetes.io/instance: {{ .Release.Name }}
+    app.kubernetes.io/component: wrk-model

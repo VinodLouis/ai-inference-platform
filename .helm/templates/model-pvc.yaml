@@ -1,0 +1,18 @@
+{{- if .Values.model.persistence.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "aip.fullname" . }}-model-pvc
+  labels:
+    {{- include "aip.labels" . | nindent 4 }}
+    app.kubernetes.io/component: wrk-model
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.model.persistence.size }}
+  {{- if .Values.model.persistence.storageClassName }}
+  storageClassName: {{ .Values.model.persistence.storageClassName }}
+  {{- end }}
+{{- end }}

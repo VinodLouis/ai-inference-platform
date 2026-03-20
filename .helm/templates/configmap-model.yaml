@@ -1,0 +1,51 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "aip.fullname" . }}-model
+  labels:
+    app.kubernetes.io/component: wrk-model
+    app.kubernetes.io/part-of: ai-inference-platform
+data:
+  common.json: |
+    {
+      "debug": 0,
+      "runtime": {
+        "providers": [
+          {
+            "type": "llama-cpp",
+            "enabled": true,
+            "settings": {
+              "modelBaseDir": "./models",
+              "modelCacheDir": "./models/.cache"
+            }
+          },
+          {
+            "type": "ollama",
+            "enabled": {{ .Values.model.ollamaEnabled | default false }},
+            "endpoint": "{{ .Values.model.ollamaEndpoint | default "" }}"
+          }
+        ]
+      },
+      "models": [
+    {{- if .Values.model.includeDefaultLlama | default true }}
+        {
+          "id": "tinyllama-1.1b",
+          "name": "TinyLlama 1.1B Chat",
+          "type": "text-generation",
+          "provider": "llama-cpp",
+          "format": "gguf",
+          "quantization": "Q4_K_M",
+          "contextLength": 2048,
+          "path": "tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf",
+          "source": {
+            "type": "huggingface",
+            "repo": "TheBloke/TinyLlama-1.1B-Chat-v1.0-GGUF",
+            "revision": "main",
+            "files": ["tinyllama-1.1b-chat-v1.0.Q4_K_M.gguf"],
+            "token": "{{ .Values.model.hfToken | default "" }}"
+          },
+          "autoload": true
+        }
+    {{- end }}
+      ]
+    }

@@ -1,0 +1,40 @@
+global:
+  env: development
+  debug: true
+
+ui:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: ai/ui-console
+    tag: latest
+
+ingress:
+  enabled: false
+
+appNode:
+  replicaCount: 1
+  image:
+    repository: ai/app-node
+    tag: latest
+  auth:
+    signupSecret: "dev-signup-secret-change-me"
+    tokenSecret: "dev-token-secret-change-me"
+
+ork:
+  replicaCount: 1
+  image:
+    repository: ai/wrk-ork
+    tag: latest
+
+inference:
+  replicas: 1
+  image:
+    repository: ai/wrk-inference
+    tag: latest
+
+model:
+  replicas: 1
+  image:
+    repository: ai/wrk-model
+    tag: latest

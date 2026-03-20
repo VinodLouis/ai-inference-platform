@@ -1,0 +1,9 @@
+Release {{ .Release.Name }} has been deployed.
+
+Service endpoint:
+  kubectl get svc {{ include "aip.fullname" . }}-app-node -n {{ .Release.Namespace }}
+
+Next steps:
+  1) Set rpc.orkRpcPublicKey and inference.modelWorkerRpcKey in values.
+  2) Set appNode auth secrets via appNode.auth.existingSecret (recommended).
+  3) If using private Hugging Face models, provide model.existingSecret or model.hfToken.

@@ -1,0 +1,18 @@
+{{- if .Values.inference.persistence.enabled }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "aip.fullname" . }}-inference-pvc
+  labels:
+    {{- include "aip.labels" . | nindent 4 }}
+    app.kubernetes.io/component: wrk-inference
+spec:
+  accessModes:
+    - ReadWriteOnce
+  resources:
+    requests:
+      storage: {{ .Values.inference.persistence.size }}
+  {{- if .Values.inference.persistence.storageClassName }}
+  storageClassName: {{ .Values.inference.persistence.storageClassName }}
+  {{- end }}
+{{- end }}

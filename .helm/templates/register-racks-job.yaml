@@ -1,0 +1,30 @@
+{{- if .Values.registerRacks.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "aip.fullname" . }}-register-racks
+  labels:
+    {{- include "aip.labels" . | nindent 4 }}
+spec:
+  template:
+    metadata:
+      labels:
+        {{- include "aip.labels" . | nindent 8 }}
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: register-racks
+          image: {{ .Values.registerRacks.image.repository }}:{{ .Values.registerRacks.image.tag }}
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              set -e
+              {{ if .Values.registerRacks.inferenceRacks }}
+              {{ range .Values.registerRacks.inferenceRacks }}
+              npx hp-rpc-cli -s {{ $.Values.rpc.orkRpcPublicKey }} -m registerRack -d '{"id":"{{ .id }}","type":"inference","info":{"rpcPublicKey":"{{ .rpcPublicKey }}"}}' -t {{ $.Values.registerRacks.timeoutMs }}
+              {{ end }}
+              {{ else }}
+              npx hp-rpc-cli -s {{ .Values.rpc.orkRpcPublicKey }} -m registerRack -d '{"id":"{{ .Values.registerRacks.inferenceRackId }}","type":"inference","info":{"rpcPublicKey":"{{ .Values.registerRacks.inferenceRpcPublicKey }}"}}' -t {{ .Values.registerRacks.timeoutMs }}
+              {{ end }}
+              npx hp-rpc-cli -s {{ .Values.rpc.orkRpcPublicKey }} -m registerRack -d '{"id":"{{ .Values.registerRacks.modelRackId }}","type":"model","info":{"rpcPublicKey":"{{ .Values.registerRacks.modelRpcPublicKey }}"}}' -t {{ .Values.registerRacks.timeoutMs }}
+{{- end }}

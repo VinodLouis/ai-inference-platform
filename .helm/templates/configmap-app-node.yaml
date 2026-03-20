@@ -1,0 +1,23 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "aip.fullname" . }}-app-node
+  labels:
+    {{- include "aip.labels" . | nindent 4 }}
+data:
+  common.json: |
+    {
+      "debug": {{ ternary 1 0 .Values.global.debug }},
+      "auth": {
+        "signupSecret": "",
+        "tokenSecret": "",
+        "tokenTtlSeconds": {{ .Values.appNode.auth.tokenTtlSeconds }},
+        "protectedRoutes": {{ ternary "true" "false" .Values.appNode.auth.protectedRoutes }},
+        "sharedStoreDir": {{ .Values.appNode.auth.sharedStoreDir | quote }}
+      },
+      "orks": {
+        "cluster-1": {
+          "rpcPublicKey": {{ .Values.rpc.orkRpcPublicKey | quote }}
+        }
+      }
+    }

@@ -1,0 +1,79 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "aip.fullname" . }}-app-node
+  labels:
+    {{- include "aip.labels" . | nindent 4 }}
+    app.kubernetes.io/component: app-node
+spec:
+  replicas: {{ .Values.appNode.replicaCount }}
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: app-node
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap-app-node.yaml") . | sha256sum }}
+      labels:
+        {{- include "aip.labels" . | nindent 8 }}
+        app.kubernetes.io/component: app-node
+    spec:
+      {{- if .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml .Values.imagePullSecrets | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: app-node
+          image: {{ .Values.appNode.image.repository }}:{{ .Values.appNode.image.tag }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          command: ["node", "worker.js", "--wtype", "wrk-node-http", "--env", "{{ .Values.global.env }}", "--port", "{{ .Values.appNode.service.port }}"]
+          ports:
+            - containerPort: {{ .Values.appNode.service.port }}
+              name: http
+          env:
+            - name: APP_SIGNUP_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ default (printf "%s-auth" (include "aip.fullname" .)) .Values.appNode.auth.existingSecret }}
+                  key: APP_SIGNUP_SECRET
+            - name: APP_TOKEN_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ default (printf "%s-auth" (include "aip.fullname" .)) .Values.appNode.auth.existingSecret }}
+                  key: APP_TOKEN_SECRET
+            - name: APP_INITIAL_ADMIN_EMAIL
+              valueFrom:
+                secretKeyRef:
+                  name: {{ default (printf "%s-auth" (include "aip.fullname" .)) .Values.appNode.auth.existingSecret }}
+                  key: APP_INITIAL_ADMIN_EMAIL
+            - name: APP_INITIAL_ADMIN_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ default (printf "%s-auth" (include "aip.fullname" .)) .Values.appNode.auth.existingSecret }}
+                  key: APP_INITIAL_ADMIN_PASSWORD
+            - name: APP_MAX_INFLIGHT_INFERENCE
+              value: {{ .Values.appNode.inference.maxInFlight | quote }}
+            - name: APP_DEFAULT_INFERENCE_MAX_TOKENS
+              value: {{ .Values.appNode.inference.defaultMaxTokens | quote }}
+            - name: APP_MAX_INFERENCE_MAX_TOKENS
+              value: {{ .Values.appNode.inference.maxTokensCap | quote }}
+          volumeMounts:
+            - name: app-node-config
+              mountPath: /app/app-node/config/common.json
+              subPath: common.json
+            {{- if .Values.appNode.persistence.enabled }}
+            - name: app-node-data
+              mountPath: /app/app-node/store
+            {{- end }}
+      volumes:
+        - name: app-node-config
+          configMap:
+            name: {{ include "aip.fullname" . }}-app-node
+        {{- if .Values.appNode.persistence.enabled }}
+        - name: app-node-data
+          persistentVolumeClaim:
+            claimName: {{ include "aip.fullname" . }}-app-node-pvc
+        {{- end }}

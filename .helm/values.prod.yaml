@@ -1,0 +1,34 @@
+global:
+  env: production
+  debug: false
+  imagePullPolicy: IfNotPresent
+
+ui:
+  enabled: true
+  replicaCount: 2
+  image:
+    repository: ai/ui-console
+    tag: latest
+
+ingress:
+  enabled: true
+  className: nginx
+  host: ai.example.com
+
+appNode:
+  replicaCount: 3
+  auth:
+    existingSecret: ai-platform-auth
+
+ork:
+  replicaCount: 2
+
+inference:
+  replicas: 3
+
+model:
+  replicas: 2
+  existingSecret: ai-platform-model
+
+registerRacks:
+  enabled: false

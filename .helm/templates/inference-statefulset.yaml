@@ -1,0 +1,66 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "aip.fullname" . }}-wrk-inference
+  labels:
+    {{- include "aip.labels" . | nindent 4 }}
+    app.kubernetes.io/component: wrk-inference
+spec:
+  serviceName: {{ include "aip.fullname" . }}-wrk-inference
+  replicas: {{ .Values.inference.replicas }}
+  {{- if .Values.inference.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: inference-data
+        labels:
+          {{- include "aip.labels" . | nindent 10 }}
+          app.kubernetes.io/component: wrk-inference
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        {{- if .Values.inference.persistence.storageClassName }}
+        storageClassName: {{ .Values.inference.persistence.storageClassName }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.inference.persistence.size }}
+  {{- end }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: wrk-inference
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap-inference.yaml") . | sha256sum }}
+      labels:
+        {{- include "aip.labels" . | nindent 8 }}
+        app.kubernetes.io/component: wrk-inference
+    spec:
+      {{- if .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml .Values.imagePullSecrets | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: wrk-inference
+          image: {{ .Values.inference.image.repository }}:{{ .Values.inference.image.tag }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              ord="${HOSTNAME##*-}"
+              idx=$((ord + 1))
+              rack="{{ .Values.inference.rackPrefix }}${idx}"
+              exec node worker.js --wtype wrk-inference --env {{ .Values.global.env }} --debug {{ .Values.global.debug }} --rack "$rack"
+          volumeMounts:
+            - name: inference-config
+              mountPath: /app/wrk-inference/config/common.json
+              subPath: common.json
+            {{- if .Values.inference.persistence.enabled }}
+            - name: inference-data
+              mountPath: /app/wrk-inference/store
+            {{- end }}
+      volumes:
+        - name: inference-config
+          configMap:
+            name: {{ include "aip.fullname" . }}-inference

@@ -1,0 +1,41 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "aip.fullname" . }}-wrk-ork
+  labels:
+    {{- include "aip.labels" . | nindent 4 }}
+    app.kubernetes.io/component: wrk-ork
+spec:
+  replicas: {{ .Values.ork.replicaCount }}
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: wrk-ork
+  template:
+    metadata:
+      labels:
+        {{- include "aip.labels" . | nindent 8 }}
+        app.kubernetes.io/component: wrk-ork
+    spec:
+      {{- if .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml .Values.imagePullSecrets | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: wrk-ork
+          image: {{ .Values.ork.image.repository }}:{{ .Values.ork.image.tag }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          command: ["node", "worker.js", "--wtype", "wrk-ork-inference", "--env", "{{ .Values.global.env }}", "--cluster", "{{ .Values.ork.cluster }}"]
+          volumeMounts:
+            {{- if .Values.ork.persistence.enabled }}
+            - name: ork-data
+              mountPath: /app/wrk-ork/store
+            {{- end }}
+      volumes:
+        {{- if .Values.ork.persistence.enabled }}
+        - name: ork-data
+          persistentVolumeClaim:
+            claimName: {{ include "aip.fullname" . }}-ork-pvc
+        {{- end }}

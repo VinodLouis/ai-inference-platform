@@ -1,0 +1,89 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ include "aip.fullname" . }}-wrk-model
+  labels:
+    {{- include "aip.labels" . | nindent 4 }}
+    app.kubernetes.io/component: wrk-model
+spec:
+  serviceName: {{ include "aip.fullname" . }}-wrk-model
+  replicas: {{ .Values.model.replicas }}
+  {{- if .Values.model.persistence.enabled }}
+  volumeClaimTemplates:
+    - metadata:
+        name: model-data
+        labels:
+          {{- include "aip.labels" . | nindent 10 }}
+          app.kubernetes.io/component: wrk-model
+      spec:
+        accessModes:
+          - ReadWriteOnce
+        {{- if .Values.model.persistence.storageClassName }}
+        storageClassName: {{ .Values.model.persistence.storageClassName }}
+        {{- end }}
+        resources:
+          requests:
+            storage: {{ .Values.model.persistence.size }}
+  {{- end }}
+  selector:
+    matchLabels:
+      app.kubernetes.io/instance: {{ .Release.Name }}
+      app.kubernetes.io/component: wrk-model
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap-model.yaml") . | sha256sum }}
+      labels:
+        {{- include "aip.labels" . | nindent 8 }}
+        app.kubernetes.io/component: wrk-model
+    spec:
+      {{- if .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml .Values.imagePullSecrets | nindent 8 }}
+      {{- end }}
+      containers:
+        - name: wrk-model
+          image: {{ .Values.model.image.repository }}:{{ .Values.model.image.tag }}
+          imagePullPolicy: {{ .Values.global.imagePullPolicy }}
+          command: ["/bin/sh", "-c"]
+          args:
+            - |
+              ord="${HOSTNAME##*-}"
+              idx=$((ord + 1))
+              rack="{{ .Values.model.rackPrefix }}${idx}"
+              exec node worker.js --wtype wrk-model --env {{ .Values.global.env }} --debug {{ .Values.global.debug }} --rack "$rack"
+          env:
+            - name: HF_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: {{ default (printf "%s-model" (include "aip.fullname" .)) .Values.model.existingSecret }}
+                  key: HF_TOKEN
+                  optional: true
+          resources:
+            {{- toYaml .Values.model.resources | nindent 12 }}
+          livenessProbe:
+            exec:
+              command:
+                - node
+                - -e
+                - "process.exit(0)"
+            initialDelaySeconds: 30
+            periodSeconds: 10
+            failureThreshold: 3
+          volumeMounts:
+            - name: model-config
+              mountPath: /app/wrk-model/config/common.json
+              subPath: common.json
+            {{- if .Values.model.persistence.enabled }}
+            - name: model-data
+              mountPath: /app/wrk-model/store
+            {{- end }}
+      volumes:
+        - name: model-config
+          configMap:
+            name: {{ include "aip.fullname" . }}-model
+        {{- if .Values.model.persistence.enabled }}
+        - name: model-data
+          persistentVolumeClaim:
+            claimName: {{ include "aip.fullname" . }}-model-pvc
+        {{- end }}

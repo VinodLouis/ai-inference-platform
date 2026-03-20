@@ -1,0 +1,19 @@
+# Copy this file to values.rpc.yaml and replace placeholders.
+# Keep this file out of committed production secrets, but RPC public keys themselves are not secret.
+
+rpc:
+  orkRpcPublicKey: "<ORK_RPC_KEY>"
+
+inference:
+  modelWorkerRpcKey: "<MODEL_RPC_KEY>"
+
+# Optional: if enabling registerRacks Job
+registerRacks:
+  enabled: false
+  inferenceRacks:
+    - id: "inference-rack-1"
+      rpcPublicKey: "<INFERENCE_RPC_KEY_1>"
+    - id: "inference-rack-2"
+      rpcPublicKey: "<INFERENCE_RPC_KEY_2>"
+  modelRackId: "model-rack-1"
+  modelRpcPublicKey: "<MODEL_RPC_KEY>"

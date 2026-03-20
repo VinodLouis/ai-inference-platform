@@ -1,0 +1,118 @@
+nameOverride: ""
+fullnameOverride: ""
+
+global:
+  env: development
+  debug: true
+  imagePullPolicy: IfNotPresent
+
+imagePullSecrets: []
+
+ui:
+  enabled: true
+  replicaCount: 1
+  image:
+    repository: ui-console
+    tag: 0.0.6
+  service:
+    type: ClusterIP
+    port: 80
+
+ingress:
+  enabled: true
+  className: nginx
+  host: ai.local.com
+  annotations:
+    nginx.ingress.kubernetes.io/use-regex: "true"
+  tls: []
+
+appNode:
+  replicaCount: 1
+  image:
+    repository: app-node
+    tag: 0.0.7
+  inference:
+    maxInFlight: 1
+    defaultMaxTokens: 48
+    maxTokensCap: 48
+  service:
+    type: ClusterIP
+    port: 3000
+  persistence:
+    enabled: true
+    size: 2Gi
+    storageClassName: ""
+  auth:
+    signupSecret: "SIGNUP_SECRET"
+    tokenSecret: "TOKEN_SECRET"
+    tokenTtlSeconds: 86400
+    protectedRoutes: true
+    sharedStoreDir: ""
+    existingSecret: ""
+    initialAdmin:
+      email: "ADMIN_EMAIL"
+      password: "ADMIN_PASSWORD"
+
+ork:
+  replicaCount: 1
+  image:
+    repository: wrk-ork
+    tag: 0.0.6
+  cluster: 1
+  persistence:
+    enabled: true
+    size: 2Gi
+    storageClassName: ""
+
+inference:
+  replicas: 2
+  image:
+    repository: wrk-inference
+    tag: 0.0.6
+  rackPrefix: inference-rack-
+  modelWorkerRpcKey: "MODEL_WORKER_RPC_KEY"
+  modelRequestTimeoutMs: 180000
+  persistence:
+    enabled: true
+    size: 2Gi
+    storageClassName: ""
+
+model:
+  replicas: 1
+  image:
+    repository: wrk-model
+    tag: 0.0.6
+  rackPrefix: model-rack-
+  resources:
+    requests:
+      memory: 3Gi
+      cpu: 2000m
+    limits:
+      memory: 8Gi
+      cpu: 8000m
+  hfToken: "HUGGINGFACE_TOKEN"
+  existingSecret: ""
+  persistence:
+    enabled: true
+    size: 10Gi
+    storageClassName: ""
+  ollamaEnabled: true
+  ollamaEndpoint: "http://ollama:11434"
+  includeDefaultLlama: true
+
+rpc:
+  orkRpcPublicKey: "ORK_RPC_PUBLIC_KEY"
+
+registerRacks:
+  enabled: false
+  image:
+    repository: node
+    tag: 20-bookworm-slim
+  timeoutMs: 10000
+  inferenceRacks:
+    - id: inference-rack-1
+      rpcPublicKey: "INFERENCE_RACK_1_RPC_PUBLIC_KEY"
+    - id: inference-rack-2
+      rpcPublicKey: "INFERENCE_RACK_2_RPC_PUBLIC_KEY"
+  modelRackId: model-rack-1
+  modelRpcPublicKey: "MODEL_RPC_PUBLIC_KEY"
