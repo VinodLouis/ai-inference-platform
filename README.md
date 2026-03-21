@@ -1,4 +1,11 @@
 # AI Inference Platform
+[![GitHub](https://img.shields.io/badge/GitHub-VinodLouis%2Fai--inference--platform-blue?logo=github)](https://github.com/VinodLouis/ai-inference-platform)
+[![Node.js](https://img.shields.io/badge/Node.js-18%2B-green?logo=node.js)](https://nodejs.org/)
+[![Hyperswarm](https://img.shields.io/badge/Hyperswarm-RPC-purple?logo=p2p)](https://github.com/hyperswarm/rpc)
+[![React](https://img.shields.io/badge/React-UI%20Console-61DAFB?logo=react)](https://react.dev/)
+[![Docker](https://img.shields.io/badge/Docker-Containerized-blue?logo=docker)](https://www.docker.com/)
+[![Kubernetes](https://img.shields.io/badge/Kubernetes-Helm%20Deployable-326CE5?logo=kubernetes)](https://kubernetes.io/)
+[![Ollama](https://img.shields.io/badge/Ollama-Inference-black?logo=ollama)](https://ollama.com/)
 
 A decentralised, microservice-based AI inference platform built on [Hyperswarm RPC](https://www.npmjs.com/package/hyperswarm). Instead of relying on a central broker, services discover each other through a DHT-backed registry, making the platform naturally resilient to node failures and easy to scale horizontally.
 
